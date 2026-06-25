@@ -1,0 +1,47 @@
+---
+description: Mandatory inline comments (human + optional AI-digestible line) on Python
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Inline documentation (required)
+
+**Applies to `*.py` in `epoch_ai/` and `tests/`.**
+
+**All new or modified code in these files must include clean, human-readable inline comments.** Where behavior is non-trivial, **each such comment must also include an `# Agent:` line** unless redundant. Module/class docstrings complement but do not replace inline comments on tricky logic.
+
+## What to comment
+
+- **Every non-trivial module, class, or function**: purpose, inputs/outputs, side effects (writes to SQLite, registry, parquet).
+- **Non-obvious logic**: why something is done, edge cases, ordering constraints (walk-forward indexing, train/test splits, recency weights).
+- **Sections in longer files**: short header comments before logical blocks.
+- **Magic numbers, flags, workarounds**: name the intent or link to a config key.
+
+## AI-oriented line (when applicable)
+
+Use paired comments:
+
+- `# Human:` — full sentence for developers.
+- `# Agent:` — dense, structured line for agents.
+
+On the **Agent** line, prefer tokens: `READS`, `WRITES`, `CALLS`, `RETURNS`, `CONFIG`, `ARTIFACT`, `CAUSAL`, `HORIZON`, failure modes.
+
+```python
+# Human: We advance the training cutoff by step_size bars so each prediction
+#        is strictly out-of-sample relative to the fit window.
+# Agent: MUTATES train_end_idx; REQUIRES chronological index; CAUSAL no future rows in X_train.
+```
+
+## Docstrings
+
+- Public modules, classes, and functions need docstrings (Google-style or existing project style).
+- Document config keys consumed, artifact paths written, and shape of returned DataFrames/Series.
+
+## Style
+
+- Place comments **above** the code they describe.
+- Keep comments **up to date** when behavior changes—stale comments are bugs.
+
+## Out of scope
+
+- Do not comment every trivial line. **Do** comment anything another developer would need to edit safely—especially ML indexing and causality.

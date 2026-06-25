@@ -1,0 +1,35 @@
+---
+description: Keep prediction/learning separate from execution, risk, and paper trading
+alwaysApply: true
+---
+
+# Prediction vs execution separation
+
+epochAI deliberately separates **what the model believes** from **what to do about it**.
+
+## Boundaries
+
+| Concern | Modules | Responsibility |
+| --- | --- | --- |
+| **Prediction** | `learning/`, `features/`, `models/`, `logging_system/` | Features, train, predict P(up) or return, log predictions/outcomes. |
+| **Simulation metrics** | `backtesting/` | Apply predictions to historical paths with fees/slippage for evaluation—not live orders. |
+| **Execution** | `execution/` | Risk limits, position sizing, thresholds, paper fills—**after** a prediction exists. |
+
+## Rules
+
+- Do **not** embed position sizing, stop-loss, fee logic, or exchange order placement inside feature groups or `LightGBMModel`.
+- Do **not** feed PnL, open positions, or account equity into training features unless the user explicitly designs an online-learning feature with documented causality.
+- The progressive engine may **call** risk helpers for context logging, but training labels come from market outcomes, not from simulated trades—unless a task explicitly changes that architecture.
+- CLI `backtest` orchestrates learning + backtester; `paper-trade` orchestrates learning + paper trader—keep orchestration in `cli.py`, not inside model code.
+
+## Thresholds
+
+- Model outputs probabilities or returns; **thresholds** (`long_threshold`, `short_threshold`) belong to execution/risk/backtest config, not to the model wrapper.
+- Near-0.5 probabilities on noisy/synthetic data causing flat positions is **expected**—document threshold overrides for demos (`AGENTS.md`).
+
+## When crossing boundaries is OK
+
+- User explicitly asks to unify prediction and execution (e.g. RL-style training on trade outcomes).
+- Logging **context** at outcome time (volatility during hold period) for analysis—not as training features unless specified.
+
+Any cross-boundary change requires tests in **both** affected areas and an ADR-level comment in the PR/summary explaining the new coupling.

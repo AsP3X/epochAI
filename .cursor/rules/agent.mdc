@@ -1,0 +1,15 @@
+---
+alwaysApply: true
+---
+
+# Agent non-negotiables
+
+- Treat rules in `.cursor/rules/` as binding requirements, not suggestions. When a rule conflicts with convenience, speed, or habit, follow the rule.
+- **epochAI layout** is a root-level Python package (`epoch_ai/`), YAML config (`config/`), and pytest suite (`tests/`). See `project-layout.mdc`. Do not assume monorepo paths from other repos (`crates/`, `apps/api`, `backend/`, etc.) unless the user is explicitly porting work.
+- **Prediction and execution are separate concerns.** The progressive learning engine predicts; risk management and paper trading live in `epoch_ai/execution/`. Do not mix position sizing, fees, or threshold logic into feature engineering or model training unless the task explicitly requires it (`prediction-execution-separation.mdc`).
+- **Walk-forward causality is sacred.** Features must be causal; training windows must respect time order; targets must not leak future information (`ml-causality.mdc`).
+- **Everything is config-driven.** New tunables belong in Pydantic models + `config/config.yaml`, not hard-coded constants (`config-driven.mdc`).
+- **Data-destructive actions must strictly follow `data-safety.mdc`.** Never wipe `artifacts/`, SQLite logs, model registry, parquet caches, or bulk-delete files without explicit user permission for that specific action.
+- **Git operations must strictly follow `git-commits.mdc` exactly.** If a requested git action is ambiguous (commit/push/merge/rebase intent is not explicit), stop and ask before running the command. Never bypass commit safeguards silently.
+- **Do not mark work complete until `definition-of-done.mdc` is satisfied** with evidence (checks run and green, docs updated).
+- **Cloud Agent sessions:** when running as a Cursor Cloud Agent, commit/push/PR workflow in `AGENTS.md` applies for that session; it does not override the commit-message format or data-safety rules in this directory.

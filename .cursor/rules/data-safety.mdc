@@ -1,0 +1,56 @@
+---
+description: Forbid destructive or data-loss actions without explicit user permission
+alwaysApply: true
+---
+
+# Data safety (mandatory)
+
+**Do not run, recommend, or chain commands that can destroy, wipe, or irreversibly alter user data** unless the user **clearly and explicitly** asked for that specific destructive outcome in the current request.
+
+When in doubt, **stop**, explain the risk, and ask before proceeding.
+
+## What counts as explicit permission
+
+The user must **name the destructive action** or clearly accept data loss, for example:
+
+- "Delete `artifacts/`"
+- "Wipe the SQLite prediction store"
+- "Remove all model versions in the registry"
+- "Truncate the logged predictions table"
+- "Force-push and overwrite remote history"
+
+**Not sufficient on their own:** "fix it", "clean up", "reset", "start fresh", "make it work", or proceeding because a previous step failed. Treat those as **non-destructive** troubleshooting unless the user confirms data loss is OK.
+
+## Forbidden without explicit permission
+
+### ML artifacts and local stores
+
+- Deleting or overwriting `artifacts/` (parquet data cache, model registry, SQLite logs, backtest outputs, MLflow runs)
+- Bulk-deleting rows from the SQLite prediction/outcome store without a scoped, user-named filter
+- Overwriting registered model versions in `artifacts/models/` without the user naming which versions may go
+- Re-running download/backtest in a way that silently replaces the user's only copy of cached historical data when they may rely on it
+
+Prefer safe alternatives: write to new paths, versioned filenames, read-only inspection, export/backup first.
+
+### Files and repositories
+
+- `rm -rf` on project trees, user home paths, or anything outside clearly disposable temp/cache dirs
+- Mass deletion of files the user did not name
+- `git reset --hard`, `git clean -fdx`, force-push, history rewrite — follow `git-commits.mdc`; ask when intent is unclear
+
+### Config and schema
+
+- Breaking changes to persisted SQLite schemas without a migration path and user awareness
+- Silently changing `synthetic_seed` or dataset paths in a way that invalidates reproducibility comparisons the user is running
+
+## epochAI-specific notes
+
+- The SQLite prediction store under `artifacts/logs/` is **cumulative across runs**. Resetting counts requires deleting that directory—treat that as destructive.
+- Synthetic fallback data is deterministic per `data.synthetic_seed`; deleting parquet caches forces regeneration (usually safe, but ask if the user is comparing against a specific cached dataset).
+- CCXT live downloads may fail in cloud/CI (HTTP 451); do not "fix" by wiping local data—use synthetic fallback as designed.
+
+## When blocked
+
+1. State **what** would be destroyed or changed.
+2. Offer **non-destructive** next steps (inspect logs, read-only queries, backup copy, new output subdirectory).
+3. Ask the user to confirm explicitly if they want the destructive path.

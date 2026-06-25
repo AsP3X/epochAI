@@ -1,0 +1,45 @@
+---
+description: Walk-forward causality, no look-ahead leakage, time-ordered ML constraints
+alwaysApply: true
+---
+
+# ML causality and walk-forward integrity
+
+epochAI's value depends on **honest out-of-sample evaluation**. Any change that leaks future information invalidates backtests and must be rejected.
+
+## Core invariants
+
+1. **Features at time t may use only information available at or before t.** Rolling windows, lags, and joins must never incorporate future OHLCV, funding, or labels.
+2. **Targets measure the future; features must not.** Forward returns and classification labels are computed separately from the feature matrix (`build_target`, `forward_return`).
+3. **Training data for step k must exclude all bars at or after the prediction cutoff for that step.** The progressive engine expands the train window forward in time—never shuffle, never random-split time series.
+4. **Predictions logged to SQLite store the feature vector at prediction time**, not post-hoc features computed with hindsight.
+
+## Feature groups
+
+- Each `FeatureGroup.compute(df)` must be **causal** on the timestamp index. Document the lookback window in comments.
+- When adding joins (derivatives, funding, OI), align on **past or same-bar** values only; forward-fill from the past is OK, backward-fill from the future is not.
+- Replacing inf with NaN and dropping rows must happen **consistently** in train and predict paths (`FeatureConfig.dropna`).
+
+## Walk-forward engine
+
+- Respect `walk_forward.initial_train_period`, `step_size`, `retrain_frequency`, `expanding`, and `max_steps`.
+- Recency weighting (`recency_half_life`) applies only to **training rows**, not to altering which bars are in the train set.
+- Step history metrics (accuracy, logloss) must reflect **genuine OOS** predictions for that step.
+
+## Testing requirements
+
+- Add or extend tests when changing indexing, window boundaries, or target alignment.
+- Use deterministic synthetic data (`conftest.market`, fixed seeds) to assert expected row counts and no future leakage.
+- If you cannot prove causality with a test, document the manual verification and add a TODO test.
+
+## Red flags (stop and fix)
+
+- `shift(-n)` on price columns used as features (negative shift leaks future).
+- `train_test_split(..., shuffle=True)` on time-indexed data.
+- Computing features on the full dataframe before slicing train/test for a walk-forward step.
+- Using global normalization stats computed on the full dataset including future bars.
+- Backfilling missing values from future rows.
+
+## Research vs production
+
+- Backtest and paper-trade paths share the same progressive engine semantics. Do not add "cheating" shortcuts to backtests that are not available live.

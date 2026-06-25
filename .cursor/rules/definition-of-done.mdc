@@ -1,0 +1,24 @@
+---
+description: Single pre-completion checklist the agent must satisfy with evidence before claiming work is done
+alwaysApply: true
+---
+
+# Definition of done
+
+Do not claim work is complete, fixed, or passing until **every applicable item below is satisfied with evidence**. State the evidence (commands run + outcomes); if something is blocked, say so explicitly with the exact command the user must run. Evidence before assertions—always.
+
+## Checklist (apply what's relevant to the change)
+
+1. **Plan coverage** — every named step is implemented, tested, or explicitly blocked with a reason (`plan-execution.mdc`).
+2. **Lint** — `.venv/bin/ruff check .` clean on touched Python files (no new suppressions without justification).
+3. **Tests** — the regression matrix rows for your change type pass; new behavior has tests; bug fixes have a guarding test (`regression-testing.mdc`). Report counts.
+4. **ML causality** — no look-ahead leakage introduced; walk-forward ordering preserved; feature groups remain causal (`ml-causality.mdc`).
+5. **Config sync** — new tunables added to Pydantic models **and** `config/config.yaml` with sensible defaults (`config-driven.mdc`).
+6. **Prediction vs execution** — prediction logic unchanged in execution modules and vice versa unless the task explicitly crosses that boundary (`prediction-execution-separation.mdc`).
+7. **Docs** — module/class docstrings updated for public API changes; `// Human:`/`// Agent:` style comments on non-trivial Python logic (`inline-documentation.mdc`); README/AGENTS.md updated when behavior, commands, or cloud gotchas changed.
+8. **No data-loss side effects** — nothing destructive was run without explicit permission (`data-safety.mdc`).
+9. **CLI smoke** (when pipeline behavior changed) — at least one relevant command succeeds, e.g. `python -m epoch_ai info`, or a fast backtest with `--bars`/`--max-steps` caps.
+
+## Reporting
+
+End substantive work with a short evidence summary: commands run and their results (e.g. `ruff check .`: clean; `pytest`: 24 passed; `python -m epoch_ai backtest --bars 8000 --max-steps 12`: completed), plus any blocked items and how to unblock them. Do not say "done" without this.

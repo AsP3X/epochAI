@@ -1,0 +1,105 @@
+---
+description: >-
+  Regression testing requirements when adding or changing features—identify
+  affected behavior, run the right checks, add tests, and verify existing flows
+  still work before marking work complete.
+alwaysApply: true
+---
+
+# Regression testing
+
+New features and refactors must **not break existing behavior**. Treat regression protection as part of the feature. This rule supplements `plan-execution.mdc` and `definition-of-done.mdc`: every verification step here must pass (or be explicitly blocked with reason) before declaring work done.
+
+## Mindset
+
+- **Preserve contracts**: CLI command shapes, config schema defaults, walk-forward step semantics, feature column stability, SQLite log schemas, model registry layout, backtest metrics definitions, and synthetic-data determinism must still work—unless the task documents a breaking change and updates all consumers in the same work.
+- **Test the blast radius, not just the diff**: ask what existing paths your change touches (feature groups, progressive engine, target builder, downloader fallback, logging store, backtester, risk/paper trader, config validation) and run checks for those areas.
+- **Add a guardrail when you fix a bug**: extend or add a test so the same regression cannot return silently.
+
+## Before you implement
+
+1. **Name affected surfaces** — List modules, CLI commands, config keys, artifact paths, and test files your change may touch.
+2. **Find existing coverage** — Search `tests/` for related cases. Prefer extending them over inventing parallel checks.
+3. **Plan verification** — Decide which automated commands and CLI smokes you will run when done. If the plan omits tests, include them unless the user explicitly scoped them out.
+
+## Test inventory (this repo)
+
+| Area | Automated checks | Notes |
+| --- | --- | --- |
+| **Full suite** | `.venv/bin/python -m pytest` | Primary gate; runs from repo root. |
+| **Config** | `tests/test_config.py` | Pydantic validation, YAML loading, defaults. |
+| **Features** | `tests/test_features.py` | Causal feature groups, pipeline, targets. |
+| **Progressive engine** | `tests/test_progressive.py` | Walk-forward steps, step history, OOS predictions. |
+| **Model / registry** | `tests/test_model.py` | Train/save/load, registry versioning. |
+| **Logging store** | `tests/test_logging_store.py` | SQLite prediction/outcome round-trip. |
+| **Synthetic data** | `tests/test_synthetic.py` | Deterministic fallback, regime structure. |
+| **Backtest metrics** | `tests/test_metrics.py` | Sharpe, drawdown, profit factor math. |
+| **Lint** | `.venv/bin/ruff check .` | Run on all Python changes; fix new violations. |
+| **CLI smoke** | `python -m epoch_ai info` | Fast config-resolution check after CLI/config changes. |
+| **Pipeline smoke** | `python -m epoch_ai backtest --bars 8000 --max-steps 12` | End-to-end walk-forward on synthetic data (slow; use when engine/backtest paths change). |
+
+Fixtures live in `tests/conftest.py` (`market` synthetic OHLCV, `small_config` fast walk-forward settings).
+
+## Verification matrix (by change type)
+
+Run **all rows that apply**; when in doubt, run the broader set.
+
+| You changed… | Required checks |
+| --- | --- |
+| **Pydantic config / YAML** | `pytest tests/test_config.py`; update `config/config.yaml`; `python -m epoch_ai info` |
+| **Feature group or pipeline** | `pytest tests/test_features.py`; grep other groups for shared helpers |
+| **Target builder / prediction horizon** | `pytest tests/test_features.py tests/test_progressive.py` |
+| **Progressive walk-forward engine** | `pytest tests/test_progressive.py`; consider fast backtest smoke |
+| **Model wrapper / registry** | `pytest tests/test_model.py` |
+| **Logging store / schemas** | `pytest tests/test_logging_store.py` |
+| **Synthetic downloader / data cleaning** | `pytest tests/test_synthetic.py`; downstream feature tests if schema changed |
+| **Backtester / metrics** | `pytest tests/test_metrics.py`; backtest smoke if integration paths changed |
+| **Risk / paper trader** | Full `pytest`; manual paper-trade smoke with threshold overrides if behavior is execution-visible |
+| **CLI commands or argparse** | `python -m epoch_ai info`; targeted command smoke for changed subcommand |
+| **Cross-cutting refactor** | Full `pytest` + `ruff check .` + CLI/backtest smoke as appropriate |
+
+## Adding regression tests (required unless blocked)
+
+- New feature group, config field, or walk-forward behavior → pytest case with deterministic synthetic data.
+- Bug fix where a test would have caught it → add that test in the same change set.
+- Changed SQLite schema or log field semantics → extend `test_logging_store.py`.
+- Do **not** weaken or delete existing tests to make new code pass without user approval.
+
+## Manual smoke paths (when automation is thin)
+
+1. **Config** — `python -m epoch_ai info` prints resolved YAML without error.
+2. **Download** — `python -m epoch_ai download --bars 2000` completes (synthetic fallback OK in cloud).
+3. **Backtest** — `python -m epoch_ai backtest --bars 8000 --max-steps 12` produces metrics and step history.
+4. **Paper trade** — `python -m epoch_ai paper-trade --bars 6000 --live-bars 300 --long-threshold 0.5 --short-threshold 0.5` exercises execution path on flat-ish predictions.
+
+Record which smokes you ran when reporting completion.
+
+## High-risk regression hotspots
+
+Pay extra attention when touching:
+
+- **Walk-forward window indexing** — off-by-one errors silently leak future data or skip bars.
+- **Feature causality** — rolling windows must use past-only data; joins must not pull future columns.
+- **Target alignment** — forward return horizon must match prediction horizon everywhere.
+- **Synthetic seed / parquet cache paths** — breaks reproducibility across machines and tests.
+- **SQLite cumulative store** — schema migrations and join logic affect training dataset rebuilds.
+- **Optional lazy imports** — core path must still run when `ccxt`, `vectorbt`, etc. are absent.
+- **Risk thresholds vs model output** — paper trader may stay flat on near-0.5 probabilities; that is expected, not a regression.
+
+## When tests cannot run
+
+- **No `.venv`**: create env and install `requirements.txt` + `requirements-dev.txt`; document if blocked.
+- **CCXT geo-blocked (HTTP 451)**: expected in cloud; synthetic fallback is not a failure. Still run pytest (uses synthetic fixtures).
+- **Blocked by environment**: document blocker, run what you can, never imply full coverage.
+- **User explicitly skips tests**: honor only for the current request; still note the risk.
+
+## Anti-patterns
+
+- Shipping ML logic changes verified only by import, not pytest.
+- Fixing a regression by loosening assertions or increasing `--max-steps` tolerance in tests without cause.
+- Declaring complete after `ruff` but not `pytest` when behavior changed.
+- Adding features that read future OHLCV in feature groups "for convenience."
+
+## Report evidence
+
+Name commands run and outcomes (e.g. `pytest`: 24 passed; `ruff check .`: clean; backtest smoke: metrics.json written). For manual smokes, list commands and key outputs.

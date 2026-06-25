@@ -4,6 +4,26 @@ epochAI is a crypto AI trading prediction system centered on **progressive
 (expanding-window) walk-forward learning**. See `README.md` for the full overview and
 standard commands; this file captures durable, non-obvious context for agents.
 
+## Cursor rules (binding)
+
+Project rules live in **`.cursor/rules/`** and are mandatory for agents—not suggestions.
+Start with `agent.mdc`, then the rules referenced there:
+
+| Rule | Purpose |
+| --- | --- |
+| `project-layout.mdc` | Where code belongs; standard commands |
+| `regression-testing.mdc` | pytest matrix, smoke paths, evidence before "done" |
+| `definition-of-done.mdc` | Pre-completion checklist |
+| `plan-execution.mdc` | Treat plans as binding checklists |
+| `git-commits.mdc` | Commit/push safety and message prefixes |
+| `data-safety.mdc` | No wiping `artifacts/` or SQLite without permission |
+| `ml-causality.mdc` | No look-ahead leakage; walk-forward integrity |
+| `config-driven.mdc` | Pydantic + YAML for all tunables |
+| `prediction-execution-separation.mdc` | Model vs risk/paper-trader boundaries |
+| `python-quality.mdc` | Ruff, typing, lazy optional imports |
+| `inline-documentation.mdc` | `# Human:` / `# Agent:` comments on non-trivial Python |
+| `documentation.mdc` | README/AGENTS sync expectations |
+
 ## Architecture (one-liner per module)
 
 - `epoch_ai/config` — Pydantic config + YAML loader (everything is config-driven).

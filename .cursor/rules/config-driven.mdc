@@ -1,0 +1,41 @@
+---
+description: All tunables via Pydantic models and config/config.yaml—no magic constants
+alwaysApply: true
+---
+
+# Config-driven design
+
+The system is **fully config-driven**. Agents must extend configuration rather than hard-code behavior.
+
+## Where config lives
+
+| Layer | Location |
+| --- | --- |
+| **Schema** | `epoch_ai/config/settings.py` — nested Pydantic `BaseModel` classes (`AppConfig` root). |
+| **Defaults file** | `config/config.yaml` — documented example users and tests load. |
+| **CLI overrides** | `epoch_ai/cli.py` — only for operational caps (`--bars`, `--max-steps`, thresholds); not for new permanent tunables. |
+| **Tests** | `AppConfig.model_validate({...})` or fixtures in `tests/conftest.py` (`small_config`). |
+
+## Adding or changing tunables
+
+1. Add the field to the appropriate Pydantic model with type, default, and `Field(description=...)` where helpful.
+2. Wire through to consumers (engine, features, model, risk)—read from `config`, not literals.
+3. Update `config/config.yaml` with a sensible default and brief comment if non-obvious.
+4. Extend `tests/test_config.py` if validation rules or cross-field constraints change.
+5. Run `python -m epoch_ai info` to confirm the YAML resolves.
+
+## Validation
+
+- Use Pydantic validators (`model_validator`, `field_validator`) for cross-field rules (e.g. horizon vs step size).
+- Fail at load time with clear errors—do not silently clamp dangerous values without logging.
+
+## Anti-patterns
+
+- Scattering the same constant in multiple modules instead of one config field.
+- CLI-only flags for parameters the backtest and paper-trader both need—put them in config unless they are pure runtime caps.
+- Environment-variable secrets in config models—epochAI uses YAML for tunables; keep secrets out of committed files.
+
+## Optional integrations
+
+- Feature toggles (`FeatureConfig`) disable whole groups—prefer toggles over deleting code paths.
+- Optional deps remain gated by lazy import; config may expose enable flags but must not require optional packages for core commands.

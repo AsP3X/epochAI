@@ -1,0 +1,29 @@
+---
+description: Project-level documentation—README, AGENTS.md, module docs kept in sync
+alwaysApply: true
+---
+
+# Documentation (project level)
+
+Complements `inline-documentation.mdc` (line/function level) with file- and project-level expectations.
+
+## README and AGENTS.md
+
+- **`README.md`** — user-facing overview, quick start, layout, progressive learning params, disclaimer. Update when CLI commands, config keys, or artifact paths change.
+- **`AGENTS.md`** — durable, non-obvious context for Cursor/Cloud agents: architecture one-liners, cloud gotchas (CCXT 451, synthetic fallback, `.venv` paths, fast smoke commands). Update when agent-relevant behavior changes.
+
+## Module and API docs
+
+- Public modules in `epoch_ai/` should have a module docstring explaining purpose and key entry points.
+- Public classes and functions need docstrings describing parameters, returns, and side effects (artifacts written, SQLite rows inserted).
+- Config models in `settings.py` use Pydantic `Field(description=...)` for every user-facing knob.
+
+## Cursor rules
+
+- When adding a new cross-cutting concern (new artifact type, new optional integration, new test gate), add or update a focused rule in `.cursor/rules/` rather than bloating `agent.mdc`.
+- Keep rule filenames kebab-case (`ml-causality.mdc`, not `ML_Causality.md`).
+
+## Before "done"
+
+- If behavior, CLI surface, config schema, or cloud constraints changed, confirm README and/or AGENTS.md were updated in the same change set (`definition-of-done.mdc`).
+- Research/educational disclaimer in README must remain intact for trading-related changes.

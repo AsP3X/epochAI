@@ -1,0 +1,61 @@
+---
+description: >-
+  epochAI repo layout—Python package, config, tests, artifacts; where to
+  implement changes by default
+alwaysApply: true
+---
+
+# epochAI project layout
+
+**epochAI** is a self-contained crypto AI trading **prediction** system built around progressive (expanding-window) walk-forward learning. Python 3.11+, LightGBM, Pydantic + YAML, SQLite + Parquet. Prediction is kept separate from execution/risk.
+
+## Directories
+
+| Path | Role |
+|------|------|
+| **`epoch_ai/config/`** | Pydantic settings models + YAML loader. All tunables live here. |
+| **`epoch_ai/data/`** | CCXT downloader, synthetic fallback, cleaning, optional websocket. |
+| **`epoch_ai/features/`** | Modular, causal feature groups + pipeline + target builder. |
+| **`epoch_ai/models/`** | LightGBM wrapper, base interface, file-based versioned registry. |
+| **`epoch_ai/logging_system/`** | SQLite prediction/outcome store + dataset joiner. |
+| **`epoch_ai/learning/`** | ★ Progressive walk-forward engine (core component). |
+| **`epoch_ai/backtesting/`** | Backtester + trading metrics (Sharpe, drawdown, etc.). |
+| **`epoch_ai/execution/`** | Risk manager + paper trader (separate from prediction). |
+| **`epoch_ai/tracking/`** | Optional MLflow wrapper (lazy-imported). |
+| **`epoch_ai/utils/`** | Logging + timeframe helpers. |
+| **`epoch_ai/cli.py`** | CLI entry: download / backtest / paper-trade / info. |
+| **`config/config.yaml`** | Example runtime config (walk-forward params highlighted). |
+| **`tests/`** | pytest suite (`conftest.py` provides synthetic market + fast config). |
+| **`artifacts/`** | Gitignored runtime output: parquet data, models, SQLite logs, backtests. |
+
+## Where to implement
+
+- **Config knobs, validation, YAML loading:** `epoch_ai/config/settings.py` + `config/config.yaml`.
+- **Data acquisition / synthetic fallback:** `epoch_ai/data/`.
+- **Feature engineering (must stay causal):** `epoch_ai/features/`.
+- **Model training, registry, persistence:** `epoch_ai/models/`.
+- **Walk-forward loop, retraining, step history:** `epoch_ai/learning/progressive.py`.
+- **Prediction/outcome logging:** `epoch_ai/logging_system/`.
+- **Backtest simulation + metrics:** `epoch_ai/backtesting/`.
+- **Risk rules, paper execution (not prediction):** `epoch_ai/execution/`.
+- **CLI commands and orchestration:** `epoch_ai/cli.py`.
+- **Tests:** mirror module structure under `tests/test_<area>.py`.
+
+## Package layout conventions
+
+- **No `src/` layout.** The importable package is root-level `epoch_ai/`.
+- **Run from repo root:** `python -m epoch_ai <cmd>` and `.venv/bin/python -m pytest`.
+- **Optional deps** (`ccxt`, `vectorbt`, `mlflow`, `river`, `pandas_ta`) are lazy-imported from `requirements-optional.txt`; core pipeline must run without them.
+- **Artifacts are local and cumulative.** SQLite prediction store persists across runs; delete `artifacts/` only with explicit permission (`data-safety.mdc`).
+
+## Standard commands
+
+| Task | Command |
+|------|---------|
+| Lint | `.venv/bin/ruff check .` |
+| Test | `.venv/bin/python -m pytest` |
+| Config inspect | `python -m epoch_ai info` |
+| Quick backtest smoke | `python -m epoch_ai backtest --bars 8000 --max-steps 12` |
+| Download / synthesize | `python -m epoch_ai download --bars 16000` |
+
+See `README.md` and `AGENTS.md` for cloud-specific gotchas (geo-blocked CCXT, synthetic fallback, `--bars`/`--max-steps` for fast runs).

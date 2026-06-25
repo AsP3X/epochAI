@@ -1,0 +1,118 @@
+---
+description: >-
+  Git commits only on explicit user request (except Cloud Agent workflow);
+  TASK/FIX/BUGFIX/DOCS/CHORE message format; branch model; staging, safety, hooks
+alwaysApply: true
+---
+
+# Git commits
+
+## Enforcement (strict)
+
+- This rule is **mandatory** for all agent-authored git actions in this repository.
+- If a git command would violate any section below, **do not run it**. Stop, explain the exact rule conflict, and ask for explicit user confirmation or clarification.
+- When multiple instructions exist, prefer the **most restrictive** interpretation that keeps history safe and intentional—**except** where Cursor Cloud Agent workflow in `AGENTS.md` explicitly requires commit/push for the current session.
+
+## When commits are allowed
+
+- **Create a git commit only when the user explicitly asks** (e.g. "commit this", "make a commit", "git commit"). Phrases like "save my work" or "checkpoint" count as explicit only if they clearly mean a **git commit**—when in doubt, **ask** before committing.
+- **Cloud Agent exception:** when running as a Cursor Cloud Agent, commit and push per the cloud workflow after substantive changes; still follow message format, staging scope, and safety rules below.
+- **Do not commit** to "helpfully" save progress in local/interactive sessions, or because a change set "feels done."
+- **Do not** amend, rebase, or otherwise rewrite history unless the user explicitly asks.
+
+## Push and branches
+
+- **Do not** `git push` (or force-push) unless the user **explicitly** asks to push—or you are in a **Cloud Agent session** where push is part of the mandated workflow.
+- **Do not** merge or rebase branches unless the user **explicitly** asks (same spirit as commits).
+
+### Branch model (this project)
+
+| Branch | Role |
+|--------|------|
+| **`master`** | **Primary / release line.** Default base for PRs. |
+| **`cursor/<descriptive-name>-0713`** | **Cloud Agent feature branches.** Use this pattern when the cloud agent creates branches. |
+| **`feature/<name>`** | **Optional feature development.** Open from up-to-date **`master`** unless the user specifies another base. |
+
+**Agent defaults when the user asks for a new branch:** create **`feature/<short-descriptive-slug>`** from **`master`**, or **`cursor/<descriptive-name>-0713`** when operating as a Cloud Agent.
+
+## Staging scope
+
+- **Stage only** paths the user named, or changes that clearly belong to the requested commit. If the working tree has **other** modified or untracked files, **list them** and either leave them unstaged or **ask**—**do not** silently `git add -A` unless the user explicitly asked to commit **everything**.
+- Before committing, prefer **`git status`** so staged vs unstaged is intentional.
+
+## One logical change per commit
+
+- Prefer **one coherent story** per commit. If the working tree mixes unrelated changes, **tell the user** and offer **split commits** or **ask** which single prefix and scope they want.
+
+## Safety (never commit)
+
+- **Secrets:** Do not commit API keys, passwords, tokens, private keys, or full `.env` files. If such material appears staged, **stop**, warn, and remove it from the index before proceeding.
+- **Generated and ignored artifacts:** Do not add `artifacts/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, model binaries, parquet caches, SQLite logs, or paths in `.gitignore` unless the user **explicitly** asks to track them.
+
+## Hooks
+
+- **Do not** bypass Git hooks with `--no-verify` / `-n` unless the user **explicitly** asks to skip hooks for that commit.
+
+---
+
+## Commit message structure (required)
+
+For any commit **authored by the agent** with a custom message, use the shape below. **Exception:** commits created by **`git merge`** or **`git revert`** may keep **Git's default message**.
+
+### Message shape
+
+1. **First line:** exactly one required prefix below, colon, space, then a short summary (~72 characters or fewer).
+2. **Blank line** after the first line when there is more to say.
+3. **Body:** optional paragraphs with detail. Match depth to change size.
+
+Every such message must begin with **exactly one** of:
+
+- **`TASK: `** — New work or refactors (behavior, structure, features); not mainly a defect repair, not docs-only, not tooling-only.
+- **`FIX: `** — Correcting something that broke because of an **earlier intentional change** (regression).
+- **`BUGFIX: `** — Fixing a **bug** not introduced solely by the immediately previous change (logic error, edge case, framework misuse).
+- **`DOCS: `** — **Documentation-only** changes (README, `AGENTS.md`, Cursor rules, guide comment blocks). Not for normal inline comments accompanying code—those stay with `TASK:`.
+- **`CHORE: `** — **Tooling and maintenance** only (CI, `.gitignore`, editor/Cursor config, formatting config, dependency bumps, hygiene).
+
+## Which prefix? (when in doubt)
+
+- Only docs/guides changed? → **`DOCS:`**
+- Only CI/ignore/config housekeeping? → **`CHORE:`**
+- Regression from the last intentional change? → **`FIX:`**
+- Pre-existing wrong behavior or latent bug? → **`BUGFIX:`**
+- Feature/refactor/product change? → **`TASK:`**
+- Mixed unrelated edits? → **split commits** or **ask**.
+
+## Format examples
+
+```text
+TASK: Add funding-rate z-score feature group with causal rolling window.
+
+Registers the group in build_feature_groups; extends test_features with
+deterministic synthetic coverage.
+```
+
+```text
+BUGFIX: Walk-forward step skipped final bar when step_size divides evenly.
+
+Advance window by one bar after last prediction; add regression test in
+test_progressive.
+```
+
+```text
+DOCS: Add Cursor rules for regression testing and ML causality.
+```
+
+```text
+CHORE: Pin ruff to 0.5.x in requirements-dev.txt.
+```
+
+## Rules summary
+
+1. **No commit** without explicit request (Cloud Agent workflow excepted); **no push/merge/rebase** unless explicitly asked or cloud-mandated.
+2. **Branches:** `master` primary; `cursor/*-0713` for cloud agents; `feature/*` optional.
+3. **Staging:** only what belongs; surface unrelated dirty files; avoid `git add -A` without explicit "commit everything".
+4. **One logical change** per commit; offer splits or ask if mixed.
+5. **Safety:** no secrets; no generated artifacts under `artifacts/` or `.venv/`.
+6. **Hooks:** no `--no-verify` unless explicitly asked.
+7. **Messages** start with `TASK:`/`FIX:`/`BUGFIX:`/`DOCS:`/`CHORE:`.
+8. **Merge/revert** commits may use Git's default message.

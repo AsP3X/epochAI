@@ -1,0 +1,44 @@
+---
+description: Python style, typing, and ruff quality gates for epochAI
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python quality
+
+Follow existing epochAI conventions: modern Python 3.11+, `from __future__ import annotations`, Pydantic v2, pandas/numpy idioms, minimal dependencies.
+
+## Lint and format
+
+- **Ruff is the linter.** Config lives in `pyproject.toml` (`line-length = 100`, `target-version = "py311"`, rules E/F/I/UP/B/W).
+- Run `.venv/bin/ruff check .` before claiming done. Fix violations you introduce; do not blanket-ignore without user approval.
+- Match import order and style of neighboring modules (stdlib → third-party → local).
+
+## Typing
+
+- Use type hints on public functions, methods, and non-trivial helpers.
+- Prefer concrete types (`pd.DataFrame`, `AppConfig`, `Path`) over bare `Any`.
+- Use `Literal`, `TypedDict`, or Pydantic models for structured config and log payloads—not untyped dicts at boundaries.
+
+## Structure
+
+- **Keep modules focused.** Config in `config/`, features in `features/`, etc.—do not create cross-layer imports that violate `prediction-execution-separation.mdc`.
+- **Prefer dataclasses or Pydantic** for structured results (see `ProgressiveResult`).
+- **Use the project logger** (`epoch_ai.utils.logging.get_logger`) instead of bare `print` in library code; CLI may print user-facing summaries.
+
+## Error handling
+
+- Fail fast with clear `ValueError`/`RuntimeError` messages for programmer errors (empty frames, missing config).
+- Optional integrations (`ccxt`, `mlflow`, `vectorbt`, `river`, `pandas_ta`) must **lazy-import** with graceful fallback—core commands work without them.
+- Do not swallow exceptions silently in the walk-forward loop; log and propagate or record in step history as appropriate.
+
+## Performance and determinism
+
+- Prefer vectorized pandas/numpy over Python loops for feature computation.
+- Use explicit `seed` parameters for synthetic data and tests; avoid unseeded global RNG in tests.
+- Cap expensive demos with config (`max_steps`, `--bars`) rather than hard-coding long runs in tests—use `small_config` fixture.
+
+## Dependencies
+
+- Core deps: `requirements.txt`. Dev: `requirements-dev.txt`. Optional: `requirements-optional.txt`.
+- Do not add heavy optional deps to core requirements without user approval.
