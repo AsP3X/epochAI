@@ -7,7 +7,7 @@ alwaysApply: true
 
 # epochAI project layout
 
-**epochAI** is a self-contained crypto AI trading **prediction** system built around progressive (expanding-window) walk-forward learning. Python 3.11+, LightGBM, Pydantic + YAML, SQLite + Parquet. Prediction is kept separate from execution/risk.
+**epochAI** is a self-contained crypto AI trading **prediction** system built around progressive (expanding-window) walk-forward learning. Python 3.12+, LightGBM, Pydantic + YAML, SQLite + Parquet. Prediction is kept separate from execution/risk.
 
 ## Directories
 

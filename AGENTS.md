@@ -90,8 +90,10 @@ and **ask** — not commit or push on their own.
 ## Cursor Cloud specific instructions
 
 - **Python env:** dependencies live in a project virtualenv at `.venv` (created by the
-  startup update script). Use `.venv/bin/python` / `.venv/bin/pytest` / `.venv/bin/ruff`,
-  or `source .venv/bin/activate`.
+  startup update script). On Linux/macOS use `.venv/bin/python` / `.venv/bin/pytest` /
+  `.venv/bin/ruff`, or `source .venv/bin/activate`. On **Windows** use
+  `.venv\Scripts\python.exe`, `.venv\Scripts\pytest.exe`, `.venv\Scripts\ruff.exe`, or
+  `.venv\Scripts\Activate.ps1`.
 - **Always run from the repo root.** The importable package is the root-level
   `epoch_ai/` (no `src/` layout, no install required). Invoke the app as
   `python -m epoch_ai <cmd>` and tests as `.venv/bin/python -m pytest` (running via

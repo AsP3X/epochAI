@@ -77,12 +77,19 @@ Future **Telegram** and **website** interfaces will call the same `TrainingServi
 
 ```bash
 python3 -m venv .venv
+# Linux/macOS:
 source .venv/bin/activate
+# Windows (PowerShell):
+#   .venv\Scripts\Activate.ps1
 pip install -r requirements.txt          # core
 pip install -r requirements-dev.txt      # ruff + pytest
 # optional integrations (ccxt, vectorbt, mlflow, river, pandas_ta):
 # pip install -r requirements-optional.txt
 ```
+
+On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python` for lint and
+tests (e.g. `.venv\Scripts\python.exe -m pytest`). CCXT is optional; with
+`data.use_synthetic_fallback: true` (the default) the pipeline runs fully offline.
 
 ### 1. Download (or synthesize) the longest possible history
 

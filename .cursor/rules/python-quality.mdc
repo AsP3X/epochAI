@@ -6,7 +6,7 @@ alwaysApply: false
 
 # Python quality
 
-Follow existing epochAI conventions: modern Python 3.11+, `from __future__ import annotations`, Pydantic v2, pandas/numpy idioms, minimal dependencies.
+Follow existing epochAI conventions: modern Python 3.12+, `from __future__ import annotations`, Pydantic v2, pandas/numpy idioms, minimal dependencies.
 
 ## Lint and format
 
