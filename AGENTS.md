@@ -23,6 +23,7 @@ Start with `agent.mdc`, then the rules referenced there:
 | `python-quality.mdc` | Ruff, typing, lazy optional imports |
 | `inline-documentation.mdc` | `# Human:` / `# Agent:` comments on non-trivial Python |
 | `documentation.mdc` | README/AGENTS sync expectations |
+| `open-weights.mdc` | Open weights + open source; **never pick a LICENSE** |
 
 ## Train vs run (primary workflows)
 
@@ -33,6 +34,13 @@ Start with `agent.mdc`, then the rules referenced there:
 
 Future Telegram/website interfaces must call these services — see
 `docs/adr/0003-train-run-interfaces.md`.
+
+## Open weights and open source
+
+- All trained models are **open weights** (plain files in `artifacts/models/v_*/`).
+- The project is **fully open source** — no proprietary core paths or weight encryption.
+- **Do not add or assign a LICENSE file** unless the repository owner explicitly asks.
+  See `docs/adr/0005-open-weights-open-source.md` and `open-weights.mdc`.
 
 ## New CLI commands
 

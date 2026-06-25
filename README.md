@@ -9,6 +9,11 @@ operating closer to real-time.
 
 > Prediction is kept strictly separate from execution/risk management.
 
+> **Open weights & open source.** All code and trained model artifacts in this project
+> are intended to be fully open: inspectable, self-hostable, and publishable as plain
+> weight files. No license has been selected in this repository yet — that choice is
+> left to the repository owner. See `docs/adr/0005-open-weights-open-source.md`.
+
 ---
 
 ## Highlights
@@ -18,8 +23,8 @@ operating closer to real-time.
 - **Rich, multi-source features** — technical, microstructure, derivatives
   (funding / open interest / liquidations), volatility/regime, and cyclical time
   features, all modular and toggle-able.
-- **LightGBM** model wrapper with time-ordered early stopping, feature importance,
-  saving/loading and a file-based **versioned registry**.
+- **Open weights by default** — versioned models export as plain LightGBM files +
+  JSON metadata (`ModelRegistry.export_open_bundle`); no encryption or load gates.
 - **Prediction + outcome logging** to SQLite (full feature vectors at prediction
   time; realised outcomes with context after the horizon) and tooling to rebuild
   training datasets from logged history.

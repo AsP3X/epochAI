@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from epoch_ai.models.registry import ModelRegistry
@@ -53,4 +55,19 @@ def test_registry_load(small_config, tmp_path):
     assert len(versions) == 1
     model, meta = registry.load(None, small_config.model, task="classification")
     assert meta["label"] == versions[0]["label"]
+    assert meta.get("open_weights") is True
     assert model.feature_names_ is not None
+
+
+def test_registry_export_open_bundle(small_config, tmp_path):
+    small_config.model.model_dir = str(tmp_path / "models")
+    small_config.data.data_dir = str(tmp_path / "data")
+    TrainingService(small_config).train(n_bars=2000, max_steps=1, register=True)
+
+    registry = ModelRegistry(small_config.model.model_dir)
+    bundle = registry.export_open_bundle(tmp_path / "release")
+    assert (bundle / "model.txt").exists()
+    assert (bundle / "metadata.json").exists()
+    assert (bundle / "README.txt").exists()
+    meta = json.loads((bundle / "metadata.json").read_text())
+    assert meta["open_weights"] is True

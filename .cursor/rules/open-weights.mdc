@@ -1,0 +1,47 @@
+---
+description: >-
+  epochAI is open weights and fully open source; never add proprietary
+  restrictions or select a license file on the agent's own initiative
+alwaysApply: true
+---
+
+# Open weights and open source (mandatory)
+
+epochAI is built as an **open-weights**, **fully open-source** project. This is a product
+requirement, not an optional nice-to-have.
+
+## What this means
+
+- **All code** in this repository must remain inspectable, forkable, and modifiable.
+  Do not introduce proprietary blobs, obfuscated logic, license-gated imports, or
+  phone-home telemetry that blocks offline use.
+- **All trained model artifacts** produced by this project are **open weights**:
+  registry files under `artifacts/models/v_*/` (booster + metadata) must be publishable
+  and shareable without encryption or access control imposed by this codebase.
+- **Training is reproducible from open components**: config YAML, feature code, training
+  scripts, and exported bundles — no hidden training steps or closed external APIs
+  required for the core pipeline.
+- **Dependencies** must stay lazy-optional where possible; never hard-require a
+  proprietary SDK for core train/run paths.
+
+## License policy (strict)
+
+- **Do not create, modify, or recommend a `LICENSE` file** unless the user explicitly
+  asks for one in the current conversation.
+- **Do not pick or assign an SPDX license** (MIT, Apache-2.0, etc.) on the agent's own
+  initiative — not in `pyproject.toml`, not in README, not in package metadata.
+- If license clarity is needed, state that **license selection is deferred to the
+  repository owner** and point to `docs/adr/0005-open-weights-open-source.md`.
+
+## Implementation expectations
+
+- Use :meth:`ModelRegistry.export_open_bundle` when packaging models for release.
+- Model metadata should include `"open_weights": true` (set by registry save).
+- Do not add DRM, API keys required to *load* local models, or weight encryption.
+- Document new model formats and training data sources so third parties can reproduce.
+
+## Anti-patterns
+
+- Adding "enterprise only" feature flags for core train/predict paths.
+- Shipping weights exclusively to a closed cloud endpoint without a local export path.
+- Choosing a license "helpfully" because the repo lacks one — **forbidden**.

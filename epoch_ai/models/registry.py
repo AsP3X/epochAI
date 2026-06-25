@@ -49,6 +49,8 @@ class ModelRegistry:
             "created_at": datetime.now(UTC).isoformat(),
             "best_iteration": model.best_iteration_,
             "n_features": len(model.feature_names_ or []),
+            "open_weights": True,
+            "feature_names": list(model.feature_names_ or []),
             **(metadata or {}),
         }
         (version_dir / "metadata.json").write_text(json.dumps(meta, indent=2, default=str))
@@ -95,3 +97,43 @@ class ModelRegistry:
         model_task = str(meta.get("task", task))
         model = LightGBMModel.load(str(model_path), config, task=model_task)
         return model, meta
+
+    def export_open_bundle(self, dest: str | Path, label: str | None = None) -> Path:
+        """Copy a versioned model into a portable open-weights bundle directory.
+
+        The bundle contains plain ``model.txt``, ``metadata.json``, and a small
+        ``README.txt`` describing reproducibility — no encryption or license gates.
+
+        Args:
+            dest: Output directory (created if missing).
+            label: Registry version to export; latest when ``None``.
+
+        Returns:
+            Path to the bundle root.
+        """
+        import shutil
+
+        resolved = label or self.latest_label()
+        if not resolved:
+            raise FileNotFoundError("No models to export.")
+
+        src = self.base_dir / resolved
+        out = Path(dest) / resolved
+        out.mkdir(parents=True, exist_ok=True)
+
+        for name in ("model.txt", "metadata.json"):
+            src_file = src / name
+            if src_file.exists():
+                shutil.copy2(src_file, out / name)
+
+        readme = out / "README.txt"
+        readme.write_text(
+            "epochAI open-weights bundle\n"
+            f"version: {resolved}\n"
+            "format: LightGBM text booster + JSON metadata\n"
+            "license: not specified in this bundle — see repository owner\n"
+            "load: epoch_ai.models.lightgbm_model.LightGBMModel.load(model.txt, ...)\n",
+            encoding="utf-8",
+        )
+        logger.info("Exported open-weights bundle to %s", out)
+        return out
