@@ -184,6 +184,23 @@ python -m epoch_ai backtest --set walk_forward.step_size=100 --max-steps 5
 python -m epoch_ai retrain --min-new-samples 50
 ```
 
+### 7b. Automated, self-updating model (promote only if better)
+
+```bash
+# One-shot: train a challenger, score it + the current champion on a fresh holdout,
+# and only repoint the live ("promoted") model when the challenger improves the metric.
+python -m epoch_ai auto-retrain
+
+# On a cadence (use an OS scheduler for robustness, or the built-in loop):
+python -m epoch_ai schedule-retrain --promote --interval-hours 24 --max-cycles 1000
+```
+
+The registry tracks a **champion** pointer (`artifacts/models/current.json`); runtime
+loads the promoted model and falls back to the latest version when none is set. The
+challenger trains on data up to a holdout (minus the embargo gap), so the comparison is
+genuinely out-of-sample. Tune the gate under `promotion:` in `config/config.yaml`
+(`eval_bars`, `metric`, `min_improvement`).
+
 ### 8. Live replay (offline) or WebSocket stream
 
 ```bash
@@ -206,19 +223,32 @@ walk_forward:
   retrain_frequency: 1         # retrain every N steps
   expanding: true              # expanding window = full accumulated history
   recency_half_life: 4000      # decay sample weights toward recent regimes (null = off)
+  embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)
   max_steps: null              # cap iterations for quick demos
 ```
 
 The same engine powers both the **backtest simulation** and a **live retraining job**:
 predict → collect outcomes + context → append samples → retrain → advance.
 
+The `embargo` gap purges the final bars of each training window so the forward-return
+labels (computed over `prediction.horizon` bars) cannot overlap — and therefore leak —
+the prediction window. It defaults to the horizon, which removes that look-ahead bias.
+
 ### Model, calibration and evaluation knobs
 
 ```yaml
+prediction:
+  neutral_band: 0.0            # >0 drops near-zero moves so labels reflect decisive moves
+
 model:
+  backend: lightgbm            # lightgbm (default) | xgboost (optional CUDA-GPU backend)
   val_fraction: 0.15           # time-ordered tail for early stopping + calibration
   class_weight: balanced       # derive scale_pos_weight from label balance (or "none")
   calibration: isotonic        # post-hoc P(up) calibration: isotonic | sigmoid | none
+  refit_full_after_es: true    # refit on full window for the ES-chosen rounds (keep freshest bars)
+  device: cpu                  # cpu | gpu | cuda — auto-falls back to cpu if unavailable
+  gpu_platform_id: -1          # OpenCL platform id for LightGBM device=gpu (-1 = auto)
+  gpu_device_id: -1            # OpenCL/CUDA device ordinal (-1 = auto)
   params:
     lambda_l1: 0.1             # mild regularisation (was 0.0)
     lambda_l2: 1.0
@@ -233,6 +263,28 @@ features:                      # look-back windows are config-driven
 
 backtest:
   horizon_aware: true          # hold each signal for prediction.horizon bars
+```
+
+**Model backends & GPU acceleration (optional).** The learner is pluggable via
+`model.backend`:
+
+- **`lightgbm`** (default) — fast CPU training. `model.device=gpu` uses LightGBM's
+  OpenCL backend (requires a GPU-enabled LightGBM build).
+- **`xgboost`** (optional, `pip install xgboost`) — ships prebuilt **CUDA wheels**, so
+  `model.device=cuda` trains on NVIDIA GPUs out of the box. On large datasets this is a
+  real speed-up (≈2× on ~1M rows in local benchmarks); on small/medium tabular data
+  (≲200k rows) tree-boosting is CPU-friendly and GPU is roughly on par due to transfer
+  overhead — so CPU stays the sensible default.
+
+Either way, a GPU request that the installed build/host cannot satisfy logs a warning
+and **automatically falls back to CPU**, so models can always be trained. Pin a device
+on multi-GPU hosts with `gpu_device_id` (and `gpu_platform_id` for LightGBM OpenCL).
+Both backends store **open weights** in the registry (`model.txt` for LightGBM,
+`model.json` for XGBoost) and share the same calibration/early-stopping behaviour.
+
+```bash
+pip install xgboost                                  # one-time
+python -m epoch_ai train --set model.backend=xgboost --set model.device=cuda
 ```
 
 Per-step out-of-sample metrics (`step_history.csv`) now include `oos_logloss`,

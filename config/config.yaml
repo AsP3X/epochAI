@@ -50,17 +50,26 @@ prediction:
   horizon: 12
   task: "classification"
   threshold: 0.0
+  neutral_band: 0.0          # >0 drops |fwd return| within the band (train on decisive moves only)
 
 # -----------------------------------------------------------------------------
-# LightGBM model.
+# Gradient-boosting model. Backend is pluggable:
+#   lightgbm (default) - fast CPU training; gpu = OpenCL.
+#   xgboost  (optional)- `pip install xgboost`; device=cuda runs on NVIDIA GPUs.
+# Both store open weights in the registry and share the same interface.
 # -----------------------------------------------------------------------------
 model:
   model_dir: "artifacts/models"
+  backend: lightgbm           # lightgbm | xgboost (xgboost enables real CUDA-GPU training)
   num_boost_round: 300
   early_stopping_rounds: 30
   val_fraction: 0.15          # time-ordered tail for early stopping + calibration
   class_weight: balanced      # derive scale_pos_weight from label balance ("none" to disable)
   calibration: isotonic       # post-hoc probability calibration: isotonic | sigmoid | none
+  refit_full_after_es: true   # after ES picks #rounds, refit on full window (keep freshest bars)
+  device: cpu                 # cpu | gpu | cuda — LightGBM gpu=OpenCL, XGBoost gpu/cuda=CUDA; auto-falls back to cpu
+  gpu_platform_id: -1         # OpenCL platform id for LightGBM device=gpu (-1 = auto)
+  gpu_device_id: -1           # OpenCL/CUDA device ordinal (-1 = auto; pin a GPU on multi-GPU hosts)
   params:
     learning_rate: 0.03
     num_leaves: 63
@@ -85,7 +94,18 @@ walk_forward:
   retrain_frequency: 1         # retrain every N steps (1 = every step)
   expanding: true              # expanding window = full accumulated history
   recency_half_life: 4000      # decay sample weights so recent regimes matter more
+  embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)
   max_steps: null              # cap iterations for quick demos (null = full run)
+
+# -----------------------------------------------------------------------------
+# Automated retraining gate: `auto-retrain` (and `schedule-retrain --promote`)
+# train a challenger, score it and the current champion on a held-out tail, and
+# only repoint the live model when the challenger improves the metric.
+# -----------------------------------------------------------------------------
+promotion:
+  eval_bars: 2000              # most-recent resolved bars held out for the comparison
+  metric: oos_logloss          # oos_logloss|oos_brier|oos_rmse (lower better) | oos_accuracy|oos_auc|oos_directional_accuracy (higher)
+  min_improvement: 0.0         # required sign-aware improvement over champion (must be strictly positive; a tie never promotes)
 
 # -----------------------------------------------------------------------------
 # Risk & execution (kept completely separate from prediction).

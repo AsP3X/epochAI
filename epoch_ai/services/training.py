@@ -18,6 +18,7 @@ from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.learning.progressive import ProgressiveLearningEngine
+from epoch_ai.learning.promotion import AutoPromoteResult, auto_retrain_and_promote
 from epoch_ai.learning.retrain_job import RetrainResult, run_retrain
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.registry import ModelRegistry
@@ -124,6 +125,15 @@ class TrainingService:
     def retrain(self, *, min_new_samples: int = 50, n_bars: int | None = None) -> RetrainResult:
         """Refresh the model from logged predictions or parquet fallback."""
         return run_retrain(self.config, min_new_samples=min_new_samples, n_bars=n_bars)
+
+    def auto_retrain(self, *, n_bars: int | None = None) -> AutoPromoteResult:
+        """Train a challenger and promote it only if it beats the champion on a holdout.
+
+        This is the safe, self-updating entry point: the registry's promoted model is
+        replaced only when out-of-sample quality improves (see
+        :mod:`epoch_ai.learning.promotion`).
+        """
+        return auto_retrain_and_promote(self.config, n_bars=n_bars)
 
     def tune(
         self,

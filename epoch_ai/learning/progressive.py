@@ -31,7 +31,8 @@ from epoch_ai.learning.step_metrics import classification_step_metrics, regressi
 from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
-from epoch_ai.models.lightgbm_model import LightGBMModel
+from epoch_ai.models.base import BaseModel
+from epoch_ai.models.factory import build_model
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.utils.logging import get_logger
 
@@ -114,6 +115,10 @@ class ProgressiveLearningEngine:
         wf = self.config.walk_forward
         horizon = self.config.prediction.horizon
         symbol = self.config.primary_symbol
+        # Purge gap: the target is a forward return over ``horizon`` bars, so the final
+        # ``embargo`` training labels would otherwise overlap (and leak) the prediction
+        # window. Dropping them keeps the train/test boundary causally clean.
+        embargo = horizon if wf.embargo is None else int(wf.embargo)
 
         # Align features with targets/outcomes and keep only resolved rows.
         y = build_target(market, self.config.prediction)
@@ -138,7 +143,7 @@ class ProgressiveLearningEngine:
         fwd_all = data["forward_return"]
         ts_all = data.index
 
-        model: LightGBMModel | None = None
+        model: BaseModel | None = None
         model_version = "untrained"
         pred_records: list[dict] = []
         step_records: list[dict] = []
@@ -150,20 +155,28 @@ class ProgressiveLearningEngine:
                 break
 
             train_start = 0 if wf.expanding else max(0, cutoff - wf.initial_train_period)
+            # Exclude the embargo gap so no training label looks into the test window.
+            train_end = max(train_start, cutoff - embargo)
+            n_train = train_end - train_start
             need_retrain = model is None or (step_idx % wf.retrain_frequency == 0)
 
             if need_retrain:
-                x_train = x_all.iloc[train_start:cutoff]
-                y_train = y_all.iloc[train_start:cutoff]
+                if n_train < 1:
+                    raise ValueError(
+                        f"Embargo ({embargo}) leaves no training rows at step {step_idx}; "
+                        "reduce walk_forward.embargo or increase initial_train_period."
+                    )
+                x_train = x_all.iloc[train_start:train_end]
+                y_train = y_all.iloc[train_start:train_end]
                 weights = self._sample_weights(len(x_train))
-                model = LightGBMModel(self.config.model, task=self.config.prediction.task)
+                model = build_model(self.config.model, task=self.config.prediction.task)
                 model.fit(x_train, y_train, sample_weight=weights)
                 if self.registry is not None:
                     model_version = self.registry.save(
                         model,
                         metadata={
                             "train_start": str(ts_all[train_start]),
-                            "train_end": str(ts_all[cutoff - 1]),
+                            "train_end": str(ts_all[train_end - 1]),
                             "train_rows": len(x_train),
                             "step": step_idx,
                         },
@@ -248,8 +261,8 @@ class ProgressiveLearningEngine:
             if n_step > 0:
                 record: dict = {
                     "step": step_idx,
-                    "train_end": ts_all[cutoff - 1],
-                    "train_rows": cutoff - train_start,
+                    "train_end": ts_all[train_end - 1],
+                    "train_rows": n_train,
                     "test_rows": n_step,
                 }
                 # Threshold-aware + probabilistic metrics (classification) or
@@ -267,7 +280,7 @@ class ProgressiveLearningEngine:
                         "Step %d | train=%d | test=%d | acc=%.3f logloss=%.4f "
                         "auc=%.3f brier=%.4f dir_acc=%.3f",
                         step_idx,
-                        cutoff - train_start,
+                        n_train,
                         n_step,
                         record["oos_accuracy"],
                         record["oos_logloss"],
@@ -284,7 +297,7 @@ class ProgressiveLearningEngine:
                     logger.info(
                         "Step %d | train=%d | test=%d | dir_acc=%.3f rmse=%.5f",
                         step_idx,
-                        cutoff - train_start,
+                        n_train,
                         n_step,
                         record["oos_accuracy"],
                         record["oos_rmse"],

@@ -91,6 +91,15 @@ def build_target(df: pd.DataFrame, prediction: PredictionConfig) -> pd.Series:
 
     if prediction.task == "regression":
         target = forward_return
+    elif prediction.neutral_band > 0.0:
+        # Dead-zone labelling: only decisive moves become training labels; bars inside
+        # the band (and the unresolved final ``horizon`` rows) stay NaN and are dropped
+        # downstream, so the model is not trained on near-zero directional noise.
+        upper = prediction.threshold + prediction.neutral_band
+        lower = prediction.threshold - prediction.neutral_band
+        target = pd.Series(np.nan, index=df.index, name="target")
+        target[forward_return > upper] = 1.0
+        target[forward_return < lower] = 0.0
     else:
         target = (forward_return > prediction.threshold).astype(float)
         target[forward_return.isna()] = np.nan

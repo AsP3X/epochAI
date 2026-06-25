@@ -11,6 +11,10 @@ from epoch_ai.models.registry import ModelRegistry
 def render_model_card(config: AppConfig, metadata: dict, label: str) -> str:
     """Render a plain-text model card for an exported bundle."""
     metrics = metadata.get("metrics", {})
+    backend = metadata.get("backend", "lightgbm")
+    weights_desc = (
+        "plain XGBoost JSON weights" if backend == "xgboost" else "plain LightGBM weights"
+    )
     lines = [
         "# epochAI Model Card",
         "",
@@ -18,13 +22,15 @@ def render_model_card(config: AppConfig, metadata: dict, label: str) -> str:
         f"**Symbol:** {metadata.get('symbol', config.primary_symbol)}",
         f"**Timeframe:** {config.timeframe}",
         f"**Task:** {metadata.get('task', config.prediction.task)}",
+        f"**Backend:** {backend}",
         f"**Horizon:** {config.prediction.horizon} candles",
         f"**Features:** {metadata.get('n_features', 'unknown')}",
         f"**Created:** {metadata.get('created_at', 'unknown')}",
         "",
         "## Open weights",
         "",
-        "This bundle contains plain LightGBM weights (`model.txt`) and JSON metadata.",
+        f"This bundle contains {weights_desc} "
+        f"(`{metadata.get('model_file', 'model.txt')}`) and JSON metadata.",
         "No license is bundled — see repository owner for terms.",
         "",
         "## Training metrics",
@@ -41,11 +47,13 @@ def render_model_card(config: AppConfig, metadata: dict, label: str) -> str:
             "## Usage",
             "",
             "```python",
-            "from epoch_ai.models.lightgbm_model import LightGBMModel",
             "from epoch_ai.config.settings import AppConfig",
+            "from epoch_ai.models.factory import model_class",
             "",
             "cfg = AppConfig()",
-            f'model = LightGBMModel.load("model.txt", cfg.model, task="{config.prediction.task}")',
+            f'model = model_class("{backend}").load(',
+            f'    "{metadata.get("model_file", "model.txt")}", cfg.model,'
+            f' task="{config.prediction.task}")',
             "```",
         ]
     )

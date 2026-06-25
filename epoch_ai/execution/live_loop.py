@@ -12,7 +12,8 @@ from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.learning.retrain_job import run_retrain
-from epoch_ai.models.lightgbm_model import LightGBMModel
+from epoch_ai.models.base import BaseModel
+from epoch_ai.models.factory import build_model
 from epoch_ai.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -35,7 +36,7 @@ class _LiveContext:
     risk_manager: RiskManager
     trader: PaperTrader
     portfolio: PortfolioState
-    model: LightGBMModel
+    model: BaseModel
     pipeline: FeaturePipeline
     market: pd.DataFrame
     data: pd.DataFrame
@@ -51,7 +52,7 @@ def run_bar_loop(
     start_pos: int,
     end_pos: int | None = None,
     retrain_every: int = 0,
-    model: LightGBMModel | None = None,
+    model: BaseModel | None = None,
 ) -> LiveLoopResult:
     """Step bar-by-bar through ``[start_pos, end_pos)`` with predict → risk → paper trade.
 
@@ -77,7 +78,7 @@ def run_bar_loop(
 
     train_end = start_pos
     if model is None:
-        model = LightGBMModel(config.model, task=config.prediction.task)
+        model = build_model(config.model, task=config.prediction.task)
         model.fit(data[feature_cols].iloc[:train_end], data["target"].iloc[:train_end])
     else:
         logger.info("Using pre-loaded registry model for runtime session.")
@@ -133,7 +134,7 @@ def _maybe_retrain(ctx: _LiveContext, pos: int) -> None:
     if len(x_train) < ctx.config.walk_forward.initial_train_period:
         logger.info("Skipping inline retrain: only %d rows available.", len(x_train))
         return
-    ctx.model = LightGBMModel(ctx.config.model, task=ctx.config.prediction.task)
+    ctx.model = build_model(ctx.config.model, task=ctx.config.prediction.task)
     ctx.model.fit(x_train, y_train)
     ctx.retrain_count += 1
     logger.info("Inline retrain #%d on %d rows.", ctx.retrain_count, len(x_train))

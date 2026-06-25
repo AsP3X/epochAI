@@ -9,6 +9,7 @@ Sub-commands:
 * ``paper-trade``  - simulate near-real-time paper trading with periodic updates.
 * ``live``         - WebSocket stream or historical replay live loop.
 * ``retrain``      - periodic retrain from SQLite logs or parquet history.
+* ``auto-retrain`` - retrain a challenger and promote it only if it beats the champion.
 * ``tune``         - run a YAML sweep over config overrides.
 * ``promote``      - promote the best tune experiment to a config file.
 * ``export``       - export open-weights bundle + model card.
@@ -327,6 +328,65 @@ def cmd_retrain(args: argparse.Namespace) -> int:
     return run_scheduled_retrain(config, min_new_samples=args.min_new_samples)
 
 
+def _print_auto_retrain(result) -> None:
+    """Pretty-print a single auto-retrain cycle result."""
+    print("=" * 64)
+    print("  AUTO-RETRAIN (challenger vs champion)")
+    print("-" * 64)
+    print(f"  Challenger     : {result.challenger_label}")
+    print(f"  Champion       : {result.champion_label or '(none)'}")
+    print(f"  Metric         : {result.metric}")
+    print(f"  Challenger val : {result.challenger_value:.6f}")
+    print(f"  Champion val   : {result.champion_value:.6f}")
+    print(f"  Train / eval   : {result.train_rows} / {result.eval_rows} rows")
+    print(f"  Decision       : {'PROMOTED' if result.promoted else 'kept champion'}")
+    print(f"  Reason         : {result.reason}")
+    print("=" * 64)
+
+
+def cmd_auto_retrain(args: argparse.Namespace) -> int:
+    """Retrain a challenger and promote it only if it beats the champion on a holdout.
+
+    With ``--minutes`` the cycle repeats back-to-back (or every ``--interval-minutes``)
+    until the wall-clock budget elapses, so a long GPU run is a single command.
+    """
+    config = _load(args)
+    service = TrainingService(config)
+
+    if args.minutes is None:
+        result = service.auto_retrain(n_bars=args.bars)
+        if result.skipped:
+            print(f"Auto-retrain skipped: {result.reason}")
+            return 1
+        _print_auto_retrain(result)
+        return 0
+
+    import time
+
+    deadline = time.monotonic() + args.minutes * 60.0
+    cycle = 0
+    promotions = 0
+    while True:
+        cycle += 1
+        result = service.auto_retrain(n_bars=args.bars)
+        promotions += int(result.promoted)
+        status = (
+            "skipped"
+            if result.skipped
+            else ("PROMOTED" if result.promoted else "kept champion")
+        )
+        print(
+            f"[cycle {cycle}] {status}: challenger={result.challenger_label} "
+            f"{result.metric}={result.challenger_value:.6f}"
+        )
+        if time.monotonic() >= deadline:
+            break
+        if args.interval_minutes > 0:
+            time.sleep(min(args.interval_minutes * 60.0, max(0.0, deadline - time.monotonic())))
+    print(f"Done: {cycle} cycle(s), {promotions} promotion(s) over ~{args.minutes:g} min.")
+    return 0
+
+
 def cmd_tune(args: argparse.Namespace) -> int:
     """Run a YAML sweep of config overrides and write metrics per experiment."""
     config = _load(args)
@@ -471,13 +531,20 @@ def cmd_schedule_retrain(args: argparse.Namespace) -> int:
         interval_hours=args.interval_hours,
         min_new_samples=args.min_new_samples,
         max_cycles=args.max_cycles,
+        promote=args.promote,
     )
     print(f"Completed {len(results)} retrain cycle(s).")
     for idx, result in enumerate(results, start=1):
-        print(
-            f"  cycle {idx}: version={result.model_version} rows={result.train_rows} "
-            f"skipped={result.skipped}"
-        )
+        if hasattr(result, "promoted"):  # AutoPromoteResult
+            print(
+                f"  cycle {idx}: challenger={result.challenger_label} "
+                f"promoted={result.promoted} skipped={result.skipped} ({result.reason})"
+            )
+        else:  # RetrainResult
+            print(
+                f"  cycle {idx}: version={result.model_version} rows={result.train_rows} "
+                f"skipped={result.skipped}"
+            )
     return 0
 
 
@@ -677,6 +744,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_rt.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
     p_rt.set_defaults(func=cmd_retrain)
 
+    p_auto = sub.add_parser(
+        "auto-retrain",
+        help="Retrain a challenger and promote it only if it beats the champion.",
+        parents=[parent],
+    )
+    p_auto.add_argument("--bars", type=int, default=None, help="Approx number of bars.")
+    p_auto.add_argument(
+        "--minutes",
+        type=float,
+        default=None,
+        help="Loop the retrain/promote cycle for this many minutes (default: one cycle).",
+    )
+    p_auto.add_argument(
+        "--interval-minutes",
+        type=float,
+        default=0.0,
+        help="Sleep between cycles when looping (default 0 = back-to-back).",
+    )
+    p_auto.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
+    p_auto.set_defaults(func=cmd_auto_retrain)
+
     p_tune = sub.add_parser("tune", help="Run a YAML config sweep.", parents=[parent])
     p_tune.add_argument(
         "--sweep",
@@ -741,6 +829,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Stop after N cycles (default 1 for smoke; omit loop with large value).",
+    )
+    p_sched.add_argument(
+        "--promote",
+        action="store_true",
+        help="Use the challenger/champion gate each cycle (promote only if better).",
     )
     p_sched.set_defaults(func=cmd_schedule_retrain)
 

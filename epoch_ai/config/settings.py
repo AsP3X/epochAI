@@ -112,11 +112,21 @@ class PredictionConfig(BaseModel):
         task: ``"classification"`` predicts P(up); ``"regression"`` predicts return.
         threshold: Forward return above which a candle is labelled "up"
             (classification) - a small positive value can encode a neutral band.
+        neutral_band: Symmetric dead-zone (in forward-return units) around
+            ``threshold`` for classification. Bars whose realised forward return falls
+            inside ``[threshold - neutral_band, threshold + neutral_band]`` are dropped
+            (NaN target) instead of being labelled, so the model learns from decisive
+            moves rather than near-zero noise. ``0`` keeps every bar (legacy behaviour).
     """
 
     horizon: int = 12
     task: Literal["classification", "regression"] = "classification"
     threshold: float = 0.0
+    neutral_band: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Dead-zone half-width around threshold; ambiguous bars are dropped.",
+    )
 
 
 class ModelConfig(BaseModel):
@@ -131,9 +141,29 @@ class ModelConfig(BaseModel):
         calibration: Post-hoc probability calibration fit on the validation tail —
             ``"isotonic"`` (non-parametric, monotone), ``"sigmoid"`` (Platt scaling)
             or ``"none"``. Only applies to classification.
+        refit_full_after_es: When early stopping is active, refit the booster on the
+            **full** training window (including the held-out validation tail) for the
+            early-stopping-selected number of rounds. This stops the deployed model
+            from permanently discarding its most-recent ``val_fraction`` of bars while
+            still choosing the iteration count honestly on out-of-sample data.
+        backend: Gradient-boosting library — ``"lightgbm"`` (default, CPU-optimised) or
+            ``"xgboost"`` (optional dependency; supports real CUDA-GPU training on NVIDIA
+            cards via ``device="cuda"``). Both implement the same model interface and
+            store open weights in the registry.
+        device: Compute device — ``"cpu"`` (default, always available), ``"gpu"`` or
+            ``"cuda"``. For LightGBM ``gpu`` is OpenCL; for XGBoost both ``gpu``/``cuda``
+            map to CUDA. A GPU request that the installed build/host cannot satisfy
+            **falls back to CPU** automatically so a model can always be trained.
+        gpu_platform_id: OpenCL platform id for LightGBM ``device="gpu"`` (``-1`` = auto).
+        gpu_device_id: OpenCL/CUDA device ordinal (``-1`` = auto). Pins a specific GPU on
+            multi-GPU hosts (used by both backends).
     """
 
     model_dir: str = "artifacts/models"
+    backend: Literal["lightgbm", "xgboost"] = Field(
+        default="lightgbm",
+        description="Gradient-boosting backend; xgboost enables real CUDA-GPU training.",
+    )
     num_boost_round: int = 300
     early_stopping_rounds: int | None = 30
     val_fraction: float = Field(
@@ -144,6 +174,22 @@ class ModelConfig(BaseModel):
     )
     class_weight: Literal["none", "balanced"] = "balanced"
     calibration: Literal["none", "isotonic", "sigmoid"] = "isotonic"
+    refit_full_after_es: bool = Field(
+        default=True,
+        description="Refit on the full training window for the ES-selected rounds.",
+    )
+    device: Literal["cpu", "gpu", "cuda"] = Field(
+        default="cpu",
+        description="Compute device; gpu/cuda fall back to cpu when unavailable.",
+    )
+    gpu_platform_id: int = Field(
+        default=-1,
+        description="OpenCL platform id for device='gpu' (-1 = auto).",
+    )
+    gpu_device_id: int = Field(
+        default=-1,
+        description="OpenCL/CUDA device id (-1 = auto).",
+    )
     params: dict[str, Any] = Field(
         default_factory=lambda: {
             "learning_rate": 0.03,
@@ -174,6 +220,11 @@ class WalkForwardConfig(BaseModel):
             rolling window of ``initial_train_period`` candles.
         recency_half_life: If set, sample weights decay with this half-life (in
             candles), emphasising recent regimes while still using full history.
+        embargo: Number of bars purged between the end of each training window and the
+            start of the prediction window. Because the target is a forward return over
+            ``prediction.horizon`` bars, the final ``horizon`` training labels otherwise
+            overlap the prediction window and leak future information. ``None`` resolves
+            to ``prediction.horizon`` (the correct gap); ``0`` disables purging (legacy).
         max_steps: Optional cap on the number of walk-forward steps (useful for
             quick smoke runs / demos).
     """
@@ -183,7 +234,52 @@ class WalkForwardConfig(BaseModel):
     retrain_frequency: int = 1
     expanding: bool = True
     recency_half_life: int | None = None
+    embargo: int | None = Field(
+        default=None,
+        ge=0,
+        description="Bars purged between train and prediction windows (None = horizon).",
+    )
     max_steps: int | None = None
+
+
+class PromotionConfig(BaseModel):
+    """Challenger/champion gate for safe **automated** retraining.
+
+    An automated retrain trains a *challenger* on data up to a recent cutoff, scores it
+    and the current *champion* on a held-out tail of bars neither trained on, and only
+    repoints the registry's promoted model when the challenger improves the chosen
+    metric by at least ``min_improvement``. This keeps a self-updating loop from
+    silently shipping a worse model.
+
+    Attributes:
+        eval_bars: Most-recent resolved bars held out to score challenger vs champion.
+        metric: Decision metric (see :mod:`epoch_ai.learning.step_metrics`). Lower is
+            better for ``oos_logloss``/``oos_brier``/``oos_rmse``; higher is better for
+            the accuracy/AUC metrics.
+        min_improvement: Minimum improvement (in metric units, sign-aware) the
+            challenger must show over the champion to be promoted. The improvement
+            must also be strictly positive, so ``0`` promotes only on a genuine
+            (non-tie) improvement rather than on any non-worse result.
+    """
+
+    eval_bars: int = Field(
+        default=2000,
+        ge=1,
+        description="Most-recent resolved bars held out to compare challenger vs champion.",
+    )
+    metric: Literal[
+        "oos_logloss",
+        "oos_brier",
+        "oos_accuracy",
+        "oos_auc",
+        "oos_directional_accuracy",
+        "oos_rmse",
+    ] = "oos_logloss"
+    min_improvement: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Required sign-aware improvement over the champion to promote.",
+    )
 
 
 class RiskConfig(BaseModel):
@@ -302,6 +398,7 @@ class AppConfig(BaseModel):
     prediction: PredictionConfig = Field(default_factory=PredictionConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     walk_forward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
+    promotion: PromotionConfig = Field(default_factory=PromotionConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
@@ -326,6 +423,14 @@ class AppConfig(BaseModel):
         if self.walk_forward.initial_train_period < self.prediction.horizon + 1:
             raise ValueError(
                 "walk_forward.initial_train_period must exceed prediction.horizon."
+            )
+        # The purge gap (defaulting to the horizon) must leave training rows behind.
+        embargo = self.walk_forward.embargo
+        resolved_embargo = self.prediction.horizon if embargo is None else embargo
+        if self.walk_forward.initial_train_period <= resolved_embargo:
+            raise ValueError(
+                "walk_forward.initial_train_period must exceed the embargo gap "
+                f"({resolved_embargo}); otherwise the first training window is empty."
             )
         return self
 

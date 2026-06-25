@@ -59,3 +59,32 @@ walk_forward:
 def test_cli_set_invalid():
     with pytest.raises(ValueError, match="key=value"):
         main(["info", "--set", "notvalid"])
+
+
+def test_cli_auto_retrain_timed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        """
+symbols: ["BTC/USDT"]
+data:
+  use_synthetic_fallback: true
+  data_dir: artifacts/data
+model:
+  model_dir: artifacts/models
+  num_boost_round: 40
+walk_forward:
+  initial_train_period: 800
+promotion:
+  eval_bars: 600
+"""
+    )
+    # A tiny budget runs exactly one cycle (do-while), exercising the timed loop path.
+    code = main(["auto-retrain", "--config", str(cfg), "--bars", "4000", "--minutes", "0.0001"])
+    assert code == 0
+
+    from epoch_ai.models.registry import ModelRegistry
+
+    registry = ModelRegistry(str(tmp_path / "artifacts/models"))
+    assert registry.latest_label() is not None
+    assert registry.promoted_label() is not None  # bootstrap promotes the first challenger

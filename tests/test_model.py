@@ -63,6 +63,82 @@ def test_calibration_fitted_and_persisted(market, small_config, tmp_path):
     assert np.allclose(preds, loaded.predict(x.iloc[2000:2100]), atol=1e-9)
 
 
+def test_refit_full_after_es_uses_all_rows(market, small_config):
+    """Refitting on the full window (incl. the val tail) changes the deployed model."""
+    small_config.model.early_stopping_rounds = 20
+    small_config.model.val_fraction = 0.2
+    x, y = _xy(market, small_config)
+
+    small_config.model.refit_full_after_es = True
+    refit = LightGBMModel(small_config.model, task="classification")
+    refit.fit(x.iloc[:2000], y.iloc[:2000])
+    preds_refit = refit.predict(x.iloc[2000:2100])
+
+    small_config.model.refit_full_after_es = False
+    split_only = LightGBMModel(small_config.model, task="classification")
+    split_only.fit(x.iloc[:2000], y.iloc[:2000])
+    preds_split = split_only.predict(x.iloc[2000:2100])
+
+    assert refit.calibrator_ is not None
+    assert ((preds_refit >= 0) & (preds_refit <= 1)).all()
+    # Training on the extra (freshest) 20% of rows must move the predictions.
+    assert not np.allclose(preds_refit, preds_split)
+
+
+def test_device_params_builder(small_config):
+    """The device param builder is a no-op on CPU and wires ids on GPU."""
+    small_config.model.device = "cpu"
+    assert LightGBMModel(small_config.model)._device_params() == {}
+
+    small_config.model.device = "gpu"
+    small_config.model.gpu_platform_id = 0
+    small_config.model.gpu_device_id = 1
+    params = LightGBMModel(small_config.model)._device_params()
+    assert params == {"device_type": "gpu", "gpu_platform_id": 0, "gpu_device_id": 1}
+
+    small_config.model.device = "cuda"
+    cuda = LightGBMModel(small_config.model)._device_params()
+    assert cuda["device_type"] == "cuda"
+    assert "gpu_platform_id" not in cuda  # platform id is OpenCL-only
+
+
+def test_gpu_request_falls_back_to_cpu(market, small_config):
+    """Requesting a GPU on a CPU-only build must still train (graceful fallback)."""
+    small_config.model.device = "gpu"
+    x, y = _xy(market, small_config)
+    model = LightGBMModel(small_config.model, task="classification")
+    model.fit(x.iloc[:1500], y.iloc[:1500])  # must not raise even without a GPU
+    preds = model.predict(x.iloc[1500:1600])
+    assert ((preds >= 0) & (preds <= 1)).all()
+
+
+def test_gpu_failure_retries_on_cpu(market, small_config, monkeypatch):
+    """A GPU LightGBMError is caught and retried on CPU (deterministic fallback)."""
+    import epoch_ai.models.lightgbm_model as mod
+
+    small_config.model.device = "gpu"
+    x, y = _xy(market, small_config)
+    real_train = mod.lgb.train
+    calls: list[str] = []
+
+    def fake_train(params, *args, **kwargs):
+        device = params.get("device_type", "cpu")
+        calls.append(device)
+        if device != "cpu":
+            raise mod.lgb.basic.LightGBMError("GPU Tree Learner was not enabled in this build")
+        return real_train(params, *args, **kwargs)
+
+    monkeypatch.setattr(mod.lgb, "train", fake_train)
+
+    model = LightGBMModel(small_config.model, task="classification")
+    model.fit(x.iloc[:1200], y.iloc[:1200])
+    preds = model.predict(x.iloc[1200:1260])
+
+    assert calls[0] == "gpu"        # first attempt requested the GPU
+    assert calls[-1] == "cpu"       # and it fell back to CPU
+    assert ((preds >= 0) & (preds <= 1)).all()
+
+
 def test_balanced_class_weight_runs(market, small_config):
     """Balanced class weighting should train and still emit valid probabilities."""
     small_config.model.class_weight = "balanced"

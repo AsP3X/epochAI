@@ -18,6 +18,11 @@ class BaseModel(ABC):
 
     task: str = "classification"
 
+    #: Registry identifier for this backend (stored in model metadata).
+    BACKEND: str = "lightgbm"
+    #: Filename used to persist the open-weights booster inside a version dir.
+    MODEL_FILENAME: str = "model.txt"
+
     @abstractmethod
     def fit(
         self,

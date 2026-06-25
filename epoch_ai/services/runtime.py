@@ -17,7 +17,7 @@ from epoch_ai.execution.live_engine import LiveSessionResult, LiveTradingEngine
 from epoch_ai.execution.live_loop import LiveLoopResult, run_bar_loop
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
-from epoch_ai.models.lightgbm_model import LightGBMModel
+from epoch_ai.models.base import BaseModel
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.services.types import PredictionResult, RuntimeStatus
 from epoch_ai.utils.logging import get_logger
@@ -35,7 +35,7 @@ class RuntimeService:
         self.registry = ModelRegistry(config.model.model_dir)
         self.pipeline = FeaturePipeline(config)
         self.risk = RiskManager(config.risk, config.prediction)
-        self._model: LightGBMModel | None = None
+        self._model: BaseModel | None = None
         self._model_version: str | None = None
         self._metadata: dict[str, Any] = {}
 
@@ -63,7 +63,7 @@ class RuntimeService:
         self._metadata = meta
         return self._model_version
 
-    def _require_model(self) -> LightGBMModel:
+    def _require_model(self) -> BaseModel:
         if self._model is None:
             self.load_model()
         assert self._model is not None

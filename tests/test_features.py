@@ -46,6 +46,21 @@ def test_forward_return_alignment(market, small_config):
     assert fr.iloc[-small_config.prediction.horizon :].isna().all()
 
 
+def test_neutral_band_drops_ambiguous_samples(market, small_config):
+    """A dead-zone around the threshold removes near-zero moves from the labels."""
+    base = build_target(market, small_config.prediction).dropna()
+
+    small_config.prediction.neutral_band = 0.02
+    banded = build_target(market, small_config.prediction)
+    valid = banded.dropna()
+
+    # Ambiguous bars are dropped => strictly fewer labels, still binary.
+    assert len(valid) < len(base)
+    assert set(np.unique(valid.to_numpy())).issubset({0.0, 1.0})
+    # The final `horizon` rows remain unresolved (NaN), preserving causality.
+    assert banded.iloc[-small_config.prediction.horizon :].isna().all()
+
+
 def test_new_technical_indicators_present(market, small_config):
     features = FeaturePipeline(small_config).transform(market)
     for col in ["ta_adx_14", "ta_williams_r", "ta_cci_20", "ta_vwap_dist", "ta_obv_z"]:

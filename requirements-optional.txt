@@ -5,6 +5,7 @@
 #   pip install -r requirements-optional.txt
 #
 ccxt>=4.2           # live + historical exchange data (REST/WebSocket)
+xgboost>=2.0        # optional GBM backend with real CUDA-GPU training (model.backend=xgboost)
 vectorbt>=0.26      # vectorized portfolio backtesting (numba-backed)
 mlflow>=2.9         # experiment + model tracking
 river>=0.21         # online/incremental learning (future path)

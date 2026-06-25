@@ -50,6 +50,8 @@ Future Telegram/website interfaces must call these services — see
 | `run` | Load registry model + paper/replay session |
 | `tune --sweep config/sweeps/example.yaml` | YAML hyperparameter sweep |
 | `retrain --min-new-samples 50` | Retrain from SQLite logs or parquet fallback |
+| `auto-retrain` | Train a challenger; promote to champion only if it beats the holdout metric |
+| `schedule-retrain --promote` | Periodic retrain loop using the challenger/champion gate |
 | `live --replay` | Historical live-loop replay (offline-safe) |
 | `--set walk_forward.step_size=100` | Dotted config overrides on any command |
 
@@ -68,13 +70,21 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
 - `epoch_ai/data` — CCXT downloader with an **offline synthetic fallback** + cleaning.
 - `epoch_ai/features` — modular, causal feature groups (incl. ADX/VWAP/OBV/CCI,
   optional sentiment + on-chain) with config-driven look-back windows.
-- `epoch_ai/models` — LightGBM wrapper (balanced class weighting + post-hoc
-  probability calibration in `calibration.py`) + file-based versioned registry.
-  The calibration sidecar (`model.txt.calibration.json`) travels with the bundle.
+- `epoch_ai/models` — pluggable GBM backends behind one interface, built via
+ `factory.build_model` (chosen by `model.backend`): **LightGBM** (default, `model.txt`)
+ and optional **XGBoost** (`model.json`, lazy-imported; real CUDA-GPU training on NVIDIA
+ cards via `model.device=cuda`). Both share balanced class weighting + post-hoc
+ probability calibration (`calibration.py`); the calibration sidecar
+ (`<model_file>.calibration.json`) travels with the bundle. GPU requests auto-fall back
+ to CPU when the build/host can't satisfy them. The registry is backend-aware (metadata
+ stores `backend`/`model_file`) and also tracks a promoted **champion** pointer
+ (`current.json`) used by runtime. Construct models via `build_model`, never by importing
+ a concrete class, so `model.backend` is honoured everywhere.
 - `epoch_ai/logging_system` — SQLite prediction/outcome store + dataset joiner.
 - `epoch_ai/learning` — the progressive walk-forward engine (core component);
-  `step_metrics.py` (OOS logloss/Brier/AUC/threshold-aware) + `weighting.py`
-  (shared recency decay used by the engine and the retrain job).
+ `step_metrics.py` (OOS logloss/Brier/AUC/threshold-aware) + `weighting.py`
+ (shared recency decay used by the engine and the retrain job) +
+ `promotion.py` (challenger/champion auto-retrain gate; promotes only if better).
 - `epoch_ai/backtesting` — backtester + native trading metrics.
 - `epoch_ai/execution` — risk manager + paper trader (separate from prediction).
 - `epoch_ai/services` — **TrainingService** (train mode) and **RuntimeService** (run mode); entry point for future Telegram/website.
@@ -104,9 +114,11 @@ and **ask** — not commit or push on their own.
   "CCXT ... using synthetic fallback" in logs is expected, not a failure. The
   synthetic data is regime-switching and deterministic per `data.synthetic_seed`.
 - **Optional heavy deps are intentionally NOT in the startup update script.** `ccxt`,
-  `vectorbt`, `mlflow`, `river`, `pandas_ta` live in `requirements-optional.txt`
-  (vectorbt/numba can be fragile on Python 3.12). All are lazy-imported with graceful
-  fallbacks, so the core pipeline runs without them. Install on demand only.
+  `xgboost`, `vectorbt`, `mlflow`, `river`, `pandas_ta` live in
+  `requirements-optional.txt` (vectorbt/numba can be fragile on Python 3.12). All are
+  lazy-imported with graceful fallbacks, so the core pipeline runs without them. Install
+  on demand only. `xgboost` is only needed for `model.backend=xgboost` (CUDA-GPU
+  training); tests for it `pytest.importorskip` and are skipped when it is absent.
 - **Artifacts are gitignored** under `artifacts/` (parquet data cache, model registry,
   SQLite logs, MLflow runs). The SQLite prediction store is **cumulative across runs** —
   delete `artifacts/logs/` (or the whole `artifacts/`) to reset counts.

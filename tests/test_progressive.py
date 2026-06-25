@@ -26,6 +26,23 @@ def test_progressive_run(market, small_config):
     )
 
 
+def test_embargo_purges_label_overlap(market, small_config):
+    """The embargo gap removes the forward-return label overlap at the train boundary."""
+    horizon = small_config.prediction.horizon
+    itp = small_config.walk_forward.initial_train_period
+    features = FeaturePipeline(small_config).transform(market)
+
+    # Default embargo (None) resolves to the prediction horizon, so the first training
+    # window loses exactly `horizon` rows that would otherwise leak the test window.
+    default_result = ProgressiveLearningEngine(small_config).run(market, features)
+    assert int(default_result.step_history["train_rows"].iloc[0]) == itp - horizon
+
+    # Disabling the embargo restores the legacy (leaky) full window size.
+    small_config.walk_forward.embargo = 0
+    no_embargo = ProgressiveLearningEngine(small_config).run(market, features)
+    assert int(no_embargo.step_history["train_rows"].iloc[0]) == itp
+
+
 def test_horizon_aware_backtest_reduces_turnover(market, small_config):
     """Horizon-aware PnL holds positions longer => lower per-step weight churn."""
     from epoch_ai.backtesting.engine import Backtester

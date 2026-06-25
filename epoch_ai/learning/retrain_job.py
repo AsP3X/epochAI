@@ -10,7 +10,7 @@ from epoch_ai.features.pipeline import FeaturePipeline, build_target
 from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.logging_system.joiner import build_training_dataset
 from epoch_ai.logging_system.store import PredictionStore
-from epoch_ai.models.lightgbm_model import LightGBMModel
+from epoch_ai.models.factory import build_model
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.utils.logging import get_logger
 
@@ -87,7 +87,7 @@ def run_retrain(
     # Emphasise recent regimes consistently with the walk-forward engine; rows are
     # chronological (parquet history is time-sorted; logs sorted above).
     weights = recency_weights(len(x), config.walk_forward.recency_half_life)
-    model = LightGBMModel(config.model, task=config.prediction.task)
+    model = build_model(config.model, task=config.prediction.task)
     model.fit(x, y, sample_weight=weights)
 
     version: str | None = None

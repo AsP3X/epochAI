@@ -67,6 +67,66 @@ def test_empty_feature_window_rejected():
         AppConfig.model_validate({"features": {"ma_windows": []}})
 
 
+def test_training_improvement_defaults():
+    """New training knobs ship with safe, backward-compatible defaults."""
+    config = AppConfig()
+    assert config.walk_forward.embargo is None          # resolves to prediction.horizon
+    assert config.prediction.neutral_band == 0.0        # dead-zone off by default
+    assert config.model.refit_full_after_es is True     # keep freshest bars in final fit
+
+
+def test_embargo_cannot_exceed_initial_train():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate(
+            {"walk_forward": {"initial_train_period": 100, "embargo": 100}}
+        )
+
+
+def test_model_device_defaults():
+    model = AppConfig().model
+    assert model.device == "cpu"
+    assert model.gpu_platform_id == -1
+    assert model.gpu_device_id == -1
+
+
+def test_invalid_device_rejected():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"model": {"device": "tpu"}})
+
+
+def test_model_backend_default_is_lightgbm():
+    assert AppConfig().model.backend == "lightgbm"
+
+
+def test_invalid_backend_rejected():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"model": {"backend": "catboost"}})
+
+
+def test_shipped_config_yaml_backend():
+    assert load_config("config/config.yaml").model.backend == "lightgbm"
+
+
+def test_promotion_defaults():
+    promotion = AppConfig().promotion
+    assert promotion.eval_bars == 2000
+    assert promotion.metric == "oos_logloss"
+    assert promotion.min_improvement == 0.0
+
+
+def test_shipped_config_yaml_has_promotion():
+    config = load_config("config/config.yaml")
+    assert config.promotion.eval_bars >= 1
+    assert config.promotion.metric in {
+        "oos_logloss",
+        "oos_brier",
+        "oos_rmse",
+        "oos_accuracy",
+        "oos_auc",
+        "oos_directional_accuracy",
+    }
+
+
 def test_invalid_val_fraction_rejected():
     with pytest.raises(ValueError):
         AppConfig.model_validate({"model": {"val_fraction": 0.9}})

@@ -29,6 +29,9 @@ class LightGBMModel(BaseModel):
     calibration and feature-importance extraction.
     """
 
+    BACKEND = "lightgbm"
+    MODEL_FILENAME = "model.txt"
+
     def __init__(self, config: ModelConfig, task: str = "classification") -> None:
         self.config = config
         self.task = task
@@ -37,6 +40,63 @@ class LightGBMModel(BaseModel):
         self.best_iteration_: int | None = None
         #: Fitted probability calibrator (classification only); ``None`` = raw output.
         self.calibrator_: ProbabilityCalibrator | None = None
+
+    # -------------------------------------------------------------------- device
+    def _device_params(self) -> dict[str, object]:
+        """LightGBM device params; empty for CPU so existing behaviour is unchanged."""
+        device = self.config.device
+        if device == "cpu":
+            return {}
+        params: dict[str, object] = {"device_type": device}
+        # Platform/device ids only apply to the OpenCL ("gpu") backend; CUDA ignores
+        # the platform id. ``-1`` means "let LightGBM auto-select".
+        if device == "gpu" and self.config.gpu_platform_id >= 0:
+            params["gpu_platform_id"] = self.config.gpu_platform_id
+        if self.config.gpu_device_id >= 0:
+            params["gpu_device_id"] = self.config.gpu_device_id
+        return params
+
+    def _train(
+        self,
+        params: dict[str, object],
+        train_set: lgb.Dataset,
+        *,
+        num_boost_round: int,
+        valid_sets: list[lgb.Dataset] | None,
+        callbacks: list,
+    ) -> lgb.Booster:
+        """Train a booster, transparently downgrading GPU -> CPU on failure.
+
+        GPU support is *optional*: if the installed LightGBM was not built with GPU
+        support (or no compatible device is present), the first GPU attempt raises a
+        ``LightGBMError``. Rather than fail the whole pipeline we log a warning, mutate
+        ``params`` to CPU (so any subsequent refit in the same fit stays on CPU), and
+        retry. This guarantees a model can always be trained on CPU.
+        """
+        try:
+            return lgb.train(
+                params,
+                train_set,
+                num_boost_round=num_boost_round,
+                valid_sets=valid_sets,
+                callbacks=callbacks,
+            )
+        except lgb.basic.LightGBMError as exc:
+            if params.get("device_type", "cpu") == "cpu":
+                raise
+            logger.warning(
+                "LightGBM GPU training failed (%s); falling back to CPU.", exc
+            )
+            params["device_type"] = "cpu"
+            params.pop("gpu_platform_id", None)
+            params.pop("gpu_device_id", None)
+            return lgb.train(
+                params,
+                train_set,
+                num_boost_round=num_boost_round,
+                valid_sets=valid_sets,
+                callbacks=callbacks,
+            )
 
     # -------------------------------------------------------------------- train
     def fit(
@@ -71,6 +131,8 @@ class LightGBMModel(BaseModel):
         params = dict(self.config.params)
         params["objective"] = "binary" if is_classification else "regression"
         params["metric"] = "binary_logloss" if is_classification else "l2"
+        # Optional GPU/CUDA acceleration (no-op for the default CPU device).
+        params.update(self._device_params())
 
         # Balanced class weighting: scale the positive ("up") class so a skewed
         # up/down label balance does not bias the booster toward the majority class.
@@ -109,7 +171,7 @@ class LightGBMModel(BaseModel):
         else:
             train_set = lgb.Dataset(x, label=y, weight=sample_weight)
 
-        self.booster = lgb.train(
+        self.booster = self._train(
             params,
             train_set,
             num_boost_round=self.config.num_boost_round,
@@ -120,10 +182,27 @@ class LightGBMModel(BaseModel):
 
         # Fit probability calibration on the held-out validation tail (classification
         # only). Without a tail we cannot calibrate honestly, so we keep raw output.
+        # Calibration is fit on the tail-naive booster (trained on [:split]); the map
+        # it learns is reused below even after the optional full-data refit, which
+        # targets the same objective and so produces a near-identical raw distribution.
         if is_classification and self.config.calibration != "none" and has_val_tail:
             raw_val = self.booster.predict(x.iloc[split:], num_iteration=self.best_iteration_)
             self.calibrator_ = ProbabilityCalibrator.fit(
                 np.asarray(raw_val), y.iloc[split:].to_numpy(), self.config.calibration
+            )
+
+        # Refit on the full training window (including the validation tail) for the
+        # early-stopping-selected number of rounds. The iteration count was chosen on
+        # genuine out-of-sample data, but the deployed model should not throw away its
+        # freshest rows — especially important for recency-sensitive crypto regimes.
+        if use_es and self.config.refit_full_after_es and split < len(x):
+            full_set = lgb.Dataset(x, label=y, weight=sample_weight)
+            self.booster = self._train(
+                params,
+                full_set,
+                num_boost_round=self.best_iteration_,
+                valid_sets=None,
+                callbacks=[lgb.log_evaluation(period=0)],
             )
         return self
 
