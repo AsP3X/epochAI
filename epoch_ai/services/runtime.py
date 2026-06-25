@@ -7,39 +7,24 @@ predictions, status, and paper/live sessions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Literal
 
 import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
+from epoch_ai.execution.live_engine import LiveSessionResult, LiveTradingEngine
 from epoch_ai.execution.live_loop import LiveLoopResult, run_bar_loop
-from epoch_ai.execution.risk import RiskDecision, RiskManager
+from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.models.lightgbm_model import LightGBMModel
 from epoch_ai.models.registry import ModelRegistry
+from epoch_ai.services.types import PredictionResult, RuntimeStatus
+from epoch_ai.utils.logging import get_logger
 
+logger = get_logger(__name__)
 
-@dataclass(slots=True)
-class PredictionResult:
-    """A single-bar model output plus risk-adjusted decision."""
-
-    timestamp: str
-    raw_prediction: float
-    decision: RiskDecision
-    model_version: str
-
-
-@dataclass(slots=True)
-class RuntimeStatus:
-    """Snapshot for dashboards, bots, and health checks."""
-
-    symbol: str
-    timeframe: str
-    model_version: str | None
-    models_available: int
-    task: str
+__all__ = ["PredictionResult", "RuntimeService", "RuntimeStatus"]
 
 
 class RuntimeService:
@@ -156,3 +141,96 @@ class RuntimeService:
             retrain_every=retrain_every,
             model=model,
         )
+
+    def run_live_feed(
+        self,
+        *,
+        n_bars: int | None = None,
+        feed_bars: int | None = None,
+        model_version: str | None = None,
+        log_predictions: bool = False,
+        warmup_bars: int | None = None,
+    ) -> LiveSessionResult:
+        """Simulate a live feed by growing an OHLCV buffer bar-by-bar, then trading.
+
+        Uses historical/synthetic data as the data source (offline-safe). Real
+        WebSocket streaming uses the same :class:`LiveTradingEngine` via ``run_live_stream``.
+        """
+        market = HistoricalDownloader(self.config).load_or_download(
+            self.config.primary_symbol,
+            n_bars=n_bars,
+        )
+        engine = LiveTradingEngine.create(
+            self.config,
+            model_version=model_version,
+            log_predictions=log_predictions,
+        )
+        min_bars = warmup_bars or engine.min_buffer_bars
+        if len(market) <= min_bars:
+            raise ValueError(
+                f"Need more than {min_bars} bars for live warmup; got {len(market)}."
+            )
+
+        end = len(market) if feed_bars is None else min(len(market), min_bars + feed_bars)
+        symbol = self.config.primary_symbol
+        for i in range(min_bars, end):
+            window = market.iloc[: i + 1]
+            engine.process_bar(symbol, window)
+        return engine.finish()
+
+    async def run_live_stream(
+        self,
+        *,
+        model_version: str | None = None,
+        log_predictions: bool = False,
+        warmup_bars: int | None = None,
+    ) -> LiveSessionResult:
+        """Stream live candles from the exchange and trade on each new bar."""
+        import asyncio
+
+        from epoch_ai.data.websocket import RealtimeDataHandler
+
+        market = HistoricalDownloader(self.config).load_or_download(
+            self.config.primary_symbol,
+            n_bars=warmup_bars or self.config.execution.min_buffer_bars,
+        )
+        engine = LiveTradingEngine.create(
+            self.config,
+            model_version=model_version,
+            log_predictions=log_predictions,
+        )
+        handler = RealtimeDataHandler(self.config)
+        symbol = self.config.primary_symbol
+
+        # Seed WebSocket buffer with warmup history.
+        for idx, ts in enumerate(market.index):
+            row = market.iloc[idx]
+            ts_ms = int(pd.Timestamp(ts).timestamp() * 1000)
+            handler.ingest_candle(
+                symbol,
+                [
+                    ts_ms,
+                    float(row["open"]),
+                    float(row["high"]),
+                    float(row["low"]),
+                    float(row["close"]),
+                    float(row.get("volume", 0.0)),
+                ],
+            )
+
+        def on_candle(sym: str, frame: pd.DataFrame) -> None:
+            tick = engine.process_bar(sym, frame)
+            if tick is not None:
+                logger.info(
+                    "Live tick %s pred=%.3f signal=%d equity=%.2f",
+                    tick.prediction.timestamp,
+                    tick.prediction.raw_prediction,
+                    tick.prediction.decision.signal,
+                    tick.equity,
+                )
+
+        try:
+            await handler.stream(on_candle=on_candle)
+        except asyncio.CancelledError:
+            pass
+        return engine.finish()

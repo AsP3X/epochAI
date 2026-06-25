@@ -92,6 +92,17 @@ risk:
   max_daily_loss: null        # e.g. 0.05 to halt after 5% session loss
   cooldown_bars: 0            # flat bars after a losing period
 
+# Live runtime: trained model + live data -> predictions -> trades
+execution:
+  mode: paper                 # paper | live
+  live_enabled: false         # set true only with API keys and --confirm-live
+  dry_run: true               # log orders but simulate fills when live_enabled
+  api_key_env: EPOCH_AI_API_KEY
+  api_secret_env: EPOCH_AI_API_SECRET
+  reserve_fraction: 0.2       # 20% of session wins set aside; 80% reinvested
+  treasury_state_path: artifacts/treasury.json
+  min_buffer_bars: 500
+
 backtest:
   use_vectorbt: false          # set true if vectorbt is installed
   annualization_factor: null   # auto-derived from timeframe when null

@@ -82,12 +82,18 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Run a trained model from the registry (paper/replay session)."""
+    """Run a trained model from the registry (paper/replay or live feed)."""
     config = _load(args)
     if args.long_threshold is not None:
         config.risk.long_threshold = args.long_threshold
     if args.short_threshold is not None:
         config.risk.short_threshold = args.short_threshold
+    if args.reserve_fraction is not None:
+        config.execution.reserve_fraction = args.reserve_fraction
+    if args.confirm_live:
+        config.execution.mode = "live"
+        config.execution.live_enabled = True
+        config.execution.dry_run = False
 
     runtime = RuntimeService(config)
     status = runtime.status()
@@ -95,7 +101,44 @@ def cmd_run(args: argparse.Namespace) -> int:
         logger.error("No trained models in registry. Run `python -m epoch_ai train` first.")
         return 1
 
-    result = runtime.run_session(
+    if args.live_stream:
+        import asyncio
+
+        try:
+            result = asyncio.run(
+                runtime.run_live_stream(
+                    model_version=args.model_version,
+                    log_predictions=args.log_predictions,
+                )
+            )
+        except RuntimeError as exc:
+            logger.error("%s — use --live-feed for offline simulation.", exc)
+            return 1
+    elif args.live_feed:
+        result = runtime.run_live_feed(
+            n_bars=args.bars,
+            feed_bars=args.live_bars,
+            model_version=args.model_version,
+            log_predictions=args.log_predictions,
+        )
+    else:
+        result = None
+
+    if args.live_stream or args.live_feed:
+        print("\n=== Live session complete ===")
+        print(f"Model version     : {result.model_version}")
+        print(f"Live ticks        : {result.ticks}")
+        print(f"Trades (fills)    : {result.fills}")
+        print(f"Final equity      : {result.final_equity:,.2f}")
+        print(f"Trading capital   : {result.treasury.trading_capital:,.2f}")
+        print(f"Reserved wins     : {result.treasury.reserved_wins:,.2f}")
+        print(f"Session PnL       : {result.treasury.last_session_pnl:,.2f}")
+        if result.treasury.last_reserved > 0:
+            print(f"Set aside (wins)  : {result.treasury.last_reserved:,.2f}")
+            print(f"Reinvested        : {result.treasury.last_reinvested:,.2f}")
+        return 0
+
+    session = runtime.run_session(
         mode="replay" if args.replay else "paper",
         n_bars=args.bars,
         live_bars=args.live_bars,
@@ -104,9 +147,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     print("\n=== Runtime session complete ===")
     print(f"Model version     : {runtime.status().model_version}")
-    print(f"Bars processed    : {result.bars_processed}")
-    print(f"Trades (fills)    : {result.fills}")
-    print(f"Final equity      : {result.final_equity:,.2f}")
+    print(f"Bars processed    : {session.bars_processed}")
+    print(f"Trades (fills)    : {session.fills}")
+    print(f"Final equity      : {session.final_equity:,.2f}")
     return 0
 
 
@@ -435,7 +478,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Inline retrain every N bars (0 = frozen model).",
     )
-    p_run.add_argument("--replay", action="store_true", help="Alias for paper replay mode.")
+    p_run.add_argument(
+        "--live-feed",
+        action="store_true",
+        help="Simulate live data bar-by-bar (predict + trade each new candle).",
+    )
+    p_run.add_argument(
+        "--live-stream",
+        action="store_true",
+        help="Stream live exchange candles via WebSocket (requires ccxt.pro).",
+    )
+    p_run.add_argument(
+        "--log-predictions",
+        action="store_true",
+        help="Persist live predictions/outcomes to SQLite for retraining.",
+    )
+    p_run.add_argument(
+        "--reserve-fraction",
+        type=float,
+        default=None,
+        help="Fraction of session wins to set aside (not reinvested).",
+    )
+    p_run.add_argument(
+        "--confirm-live",
+        action="store_true",
+        help="Enable real exchange orders (requires API keys; use with care).",
+    )
+    p_run.add_argument(
+        "--replay",
+        action="store_true",
+        help="Historical replay session (batch mode, not live-feed).",
+    )
     p_run.add_argument("--long-threshold", type=float, default=None)
     p_run.add_argument("--short-threshold", type=float, default=None)
     p_run.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)

@@ -135,6 +135,24 @@ class RiskConfig(BaseModel):
     cooldown_bars: int = 0
 
 
+class ExecutionConfig(BaseModel):
+    """Live runtime and trade-execution settings (separate from model training)."""
+
+    mode: Literal["paper", "live"] = "paper"
+    live_enabled: bool = False
+    dry_run: bool = True
+    api_key_env: str = "EPOCH_AI_API_KEY"
+    api_secret_env: str = "EPOCH_AI_API_SECRET"
+    reserve_fraction: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of session profits set aside (not reinvested).",
+    )
+    treasury_state_path: str = "artifacts/treasury.json"
+    min_buffer_bars: int = 500
+
+
 class BacktestConfig(BaseModel):
     """Backtester settings."""
 
@@ -167,6 +185,7 @@ class AppConfig(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     walk_forward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)

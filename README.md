@@ -90,7 +90,32 @@ python -m epoch_ai train --bars 16000 --log-predictions
 This walks forward through history, learns from realised outcomes, and saves versioned
 models under `artifacts/models/`.
 
-### 3. Run the trained model (paper session)
+### 3. Run the trained model on live data (predict + trade)
+
+Simulated live feed (offline-safe — grows bar-by-bar like real streaming):
+
+```bash
+python -m epoch_ai run --live-feed --bars 6000 --live-bars 100 \
+    --log-predictions --reserve-fraction 0.2 \
+    --long-threshold 0.5 --short-threshold 0.5
+```
+
+Real exchange WebSocket (requires ccxt.pro + reachable exchange):
+
+```bash
+python -m epoch_ai run --live-stream --log-predictions
+```
+
+Real money (opt-in only — requires API keys in `EPOCH_AI_API_KEY` / `EPOCH_AI_API_SECRET`):
+
+```bash
+python -m epoch_ai run --live-stream --confirm-live --log-predictions
+```
+
+Session profits are split per `execution.reserve_fraction`: wins can be **reinvested**
+(trading capital) or **set aside** (reserved wins in `artifacts/treasury.json`).
+
+### 4. Run the trained model (paper replay batch mode)
 
 ```bash
 python -m epoch_ai run --bars 6000 --live-bars 300 \
