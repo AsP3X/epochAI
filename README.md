@@ -52,6 +52,16 @@ tests/                 # pytest suite
 
 ## Quick start
 
+epochAI has two primary workflows:
+
+| Mode | Purpose | Command |
+| --- | --- | --- |
+| **Train** | Walk-forward learning, register versioned models | `python -m epoch_ai train` |
+| **Run** | Load a trained model, predict + paper-execute | `python -m epoch_ai run` |
+
+Future **Telegram** and **website** interfaces will call the same `TrainingService` and
+`RuntimeService` in `epoch_ai/services/` (see `docs/adr/0003-train-run-interfaces.md`).
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -71,7 +81,26 @@ If the exchange is reachable, CCXT fetches OHLCV (+ funding history) from
 `historical_start_date` forward. Otherwise a synthetic regime-switching dataset is
 generated and cached to `artifacts/data/`.
 
-### 2. Run the first end-to-end progressive historical-learning backtest
+### 2. Train the AI (progressive walk-forward + model registry)
+
+```bash
+python -m epoch_ai train --bars 16000 --log-predictions
+```
+
+This walks forward through history, learns from realised outcomes, and saves versioned
+models under `artifacts/models/`.
+
+### 3. Run the trained model (paper session)
+
+```bash
+python -m epoch_ai run --bars 6000 --live-bars 300 \
+    --long-threshold 0.5 --short-threshold 0.5
+```
+
+Loads the latest registry model and steps bar-by-bar with risk rules + paper execution.
+Requires a prior `train` (or `backtest --register-models`).
+
+### 4. Run the first end-to-end progressive historical-learning backtest
 
 ```bash
 python -m epoch_ai backtest --bars 16000 --log-predictions --register-models
@@ -83,7 +112,7 @@ report plus the **out-of-sample learning curve** (accuracy first half vs second 
 Artifacts are written to `artifacts/backtests/` (`metrics.json`, `equity_curve.csv`,
 `step_history.csv`, `feature_importance.csv`).
 
-### 3. Simulate near-real-time paper trading with periodic updates
+### 5. Simulate near-real-time paper trading with periodic updates
 
 ```bash
 python -m epoch_ai paper-trade --bars 6000 --live-bars 300 \
@@ -97,20 +126,20 @@ hard-to-predict data so the execution path is exercised.
 
 Use `--retrain-every N` for inline expanding-window retrains during the replay.
 
-### 4. Hyperparameter sweep and config overrides
+### 6. Hyperparameter sweep and config overrides
 
 ```bash
 python -m epoch_ai tune --sweep config/sweeps/example.yaml --bars 4000 --max-steps 3
 python -m epoch_ai backtest --set walk_forward.step_size=100 --max-steps 5
 ```
 
-### 5. Periodic retrain from logs
+### 7. Periodic retrain from logs
 
 ```bash
 python -m epoch_ai retrain --min-new-samples 50
 ```
 
-### 6. Live replay (offline) or WebSocket stream
+### 8. Live replay (offline) or WebSocket stream
 
 ```bash
 python -m epoch_ai live --replay --bars 6000 --live-bars 300

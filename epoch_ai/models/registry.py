@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from epoch_ai.config.settings import ModelConfig
 from epoch_ai.models.lightgbm_model import LightGBMModel
 from epoch_ai.utils.logging import get_logger
 
@@ -62,3 +63,35 @@ class ModelRegistry:
             if p.name.split("_")[-1].isdigit()
         ]
         return f"v_{max(versions)}" if versions else None
+
+    def list_versions(self) -> list[dict[str, Any]]:
+        """Return metadata dicts for every registered version, oldest first."""
+        entries: list[dict[str, Any]] = []
+        for path in sorted(self.base_dir.glob("v_*")):
+            meta_path = path / "metadata.json"
+            if meta_path.exists():
+                entries.append(json.loads(meta_path.read_text(encoding="utf-8")))
+        return entries
+
+    def load(
+        self,
+        label: str | None,
+        config: ModelConfig,
+        *,
+        task: str = "classification",
+    ) -> tuple[LightGBMModel, dict[str, Any]]:
+        """Load a versioned model and its metadata sidecar."""
+        resolved = label or self.latest_label()
+        if not resolved:
+            raise FileNotFoundError(
+                f"No models in registry at {self.base_dir}. Run training first."
+            )
+        version_dir = self.base_dir / resolved
+        model_path = version_dir / "model.txt"
+        meta_path = version_dir / "metadata.json"
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model file missing for {resolved}: {model_path}")
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        model_task = str(meta.get("task", task))
+        model = LightGBMModel.load(str(model_path), config, task=model_task)
+        return model, meta

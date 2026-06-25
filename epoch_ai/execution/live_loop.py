@@ -51,6 +51,7 @@ def run_bar_loop(
     start_pos: int,
     end_pos: int | None = None,
     retrain_every: int = 0,
+    model: LightGBMModel | None = None,
 ) -> LiveLoopResult:
     """Step bar-by-bar through ``[start_pos, end_pos)`` with predict → risk → paper trade.
 
@@ -75,8 +76,11 @@ def run_bar_loop(
         raise ValueError(f"start_pos {start_pos} out of range for {len(data)} rows.")
 
     train_end = start_pos
-    model = LightGBMModel(config.model, task=config.prediction.task)
-    model.fit(data[feature_cols].iloc[:train_end], data["target"].iloc[:train_end])
+    if model is None:
+        model = LightGBMModel(config.model, task=config.prediction.task)
+        model.fit(data[feature_cols].iloc[:train_end], data["target"].iloc[:train_end])
+    else:
+        logger.info("Using pre-loaded registry model for runtime session.")
 
     ctx = _LiveContext(
         config=config,

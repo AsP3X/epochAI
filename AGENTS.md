@@ -24,10 +24,22 @@ Start with `agent.mdc`, then the rules referenced there:
 | `inline-documentation.mdc` | `# Human:` / `# Agent:` comments on non-trivial Python |
 | `documentation.mdc` | README/AGENTS sync expectations |
 
+## Train vs run (primary workflows)
+
+| Mode | Service | CLI |
+| --- | --- | --- |
+| **Train** | `epoch_ai.services.TrainingService` | `python -m epoch_ai train` |
+| **Run** | `epoch_ai.services.RuntimeService` | `python -m epoch_ai run` |
+
+Future Telegram/website interfaces must call these services — see
+`docs/adr/0003-train-run-interfaces.md`.
+
 ## New CLI commands
 
 | Command | Purpose |
 | --- | --- |
+| `train` | Train AI + register model (primary training entry) |
+| `run` | Load registry model + paper/replay session |
 | `tune --sweep config/sweeps/example.yaml` | YAML hyperparameter sweep |
 | `retrain --min-new-samples 50` | Retrain from SQLite logs or parquet fallback |
 | `live --replay` | Historical live-loop replay (offline-safe) |
@@ -52,6 +64,7 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
 - `epoch_ai/learning` — the progressive walk-forward engine (core component).
 - `epoch_ai/backtesting` — backtester + native trading metrics.
 - `epoch_ai/execution` — risk manager + paper trader (separate from prediction).
+- `epoch_ai/services` — **TrainingService** (train mode) and **RuntimeService** (run mode); entry point for future Telegram/website.
 
 ## Cursor Cloud specific instructions
 

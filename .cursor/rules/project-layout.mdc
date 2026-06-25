@@ -58,6 +58,8 @@ alwaysApply: true
 | Config override | `python -m epoch_ai backtest --set walk_forward.step_size=100` |
 | Hyperparameter sweep | `python -m epoch_ai tune --sweep config/sweeps/example.yaml` |
 | Retrain job | `python -m epoch_ai retrain` |
+| **Train AI** | `python -m epoch_ai train --bars 16000` |
+| **Run AI** | `python -m epoch_ai run --bars 6000 --live-bars 300` |
 | Live replay | `python -m epoch_ai live --replay --bars 6000 --live-bars 300` |
 | Quick backtest smoke | `python -m epoch_ai backtest --bars 8000 --max-steps 12` |
 | Download / synthesize | `python -m epoch_ai download --bars 16000` |

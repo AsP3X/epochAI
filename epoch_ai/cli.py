@@ -2,6 +2,8 @@
 
 Sub-commands:
 
+* ``train``        - train the AI (progressive walk-forward + model registry).
+* ``run``          - run a trained model (paper/replay session from registry).
 * ``download``     - fetch the longest possible history (or synthesize it offline).
 * ``backtest``     - run the progressive historical-learning backtest.
 * ``paper-trade``  - simulate near-real-time paper trading with periodic updates.
@@ -28,6 +30,8 @@ from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.execution.live_loop import run_bar_loop, run_scheduled_retrain
 from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.logging_system.store import PredictionStore
+from epoch_ai.services.runtime import RuntimeService
+from epoch_ai.services.training import TrainingService
 from epoch_ai.tracking.mlflow_tracker import MLflowTracker
 from epoch_ai.utils.logging import get_logger, setup_logging
 
@@ -55,6 +59,57 @@ def _load(args: argparse.Namespace) -> AppConfig:
 
 
 # --------------------------------------------------------------------- commands
+def cmd_train(args: argparse.Namespace) -> int:
+    """Train the AI via progressive walk-forward learning and register the model."""
+    config = _load(args)
+    service = TrainingService(config)
+    result = service.train(
+        n_bars=args.bars,
+        max_steps=args.max_steps,
+        log_predictions=args.log_predictions,
+        register=not args.no_register,
+    )
+    print("\n=== Training complete ===")
+    print(f"Symbol            : {config.primary_symbol}")
+    print(f"Model version     : {result.model_version or '(not registered)'}")
+    print(f"Walk-forward steps: {result.walk_forward_steps}")
+    print(f"Final train rows  : {result.train_rows:,}")
+    if not result.feature_importance.empty:
+        print("Top features:")
+        for name, gain in result.feature_importance.head(5).items():
+            print(f"  {name:<28}{gain:>10.1f}")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Run a trained model from the registry (paper/replay session)."""
+    config = _load(args)
+    if args.long_threshold is not None:
+        config.risk.long_threshold = args.long_threshold
+    if args.short_threshold is not None:
+        config.risk.short_threshold = args.short_threshold
+
+    runtime = RuntimeService(config)
+    status = runtime.status()
+    if status.models_available == 0:
+        logger.error("No trained models in registry. Run `python -m epoch_ai train` first.")
+        return 1
+
+    result = runtime.run_session(
+        mode="replay" if args.replay else "paper",
+        n_bars=args.bars,
+        live_bars=args.live_bars,
+        retrain_every=args.retrain_every,
+        model_version=args.model_version,
+    )
+    print("\n=== Runtime session complete ===")
+    print(f"Model version     : {runtime.status().model_version}")
+    print(f"Bars processed    : {result.bars_processed}")
+    print(f"Trades (fills)    : {result.fills}")
+    print(f"Final equity      : {result.final_equity:,.2f}")
+    return 0
+
+
 def cmd_download(args: argparse.Namespace) -> int:
     """Download or synthesize historical data and cache it as parquet."""
     config = _load(args)
@@ -350,6 +405,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(prog="epoch-ai", description=__doc__, parents=[parent])
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_train = sub.add_parser(
+        "train",
+        help="Train the AI (progressive learning + model registry).",
+        parents=[parent],
+    )
+    p_train.add_argument("--bars", type=int, default=None, help="Approx number of bars.")
+    p_train.add_argument("--max-steps", type=int, default=None, help="Cap walk-forward steps.")
+    p_train.add_argument("--log-predictions", action="store_true", help="Persist to SQLite.")
+    p_train.add_argument(
+        "--no-register",
+        action="store_true",
+        help="Skip writing models to the registry.",
+    )
+    p_train.set_defaults(func=cmd_train)
+
+    p_run = sub.add_parser(
+        "run",
+        help="Run a trained model from the registry.",
+        parents=[parent],
+    )
+    p_run.add_argument("--bars", type=int, default=None, help="Approx number of bars.")
+    p_run.add_argument("--live-bars", type=int, default=500, help="Tail length to run.")
+    p_run.add_argument("--model-version", default=None, help="Registry label (default: latest).")
+    p_run.add_argument(
+        "--retrain-every",
+        type=int,
+        default=0,
+        help="Inline retrain every N bars (0 = frozen model).",
+    )
+    p_run.add_argument("--replay", action="store_true", help="Alias for paper replay mode.")
+    p_run.add_argument("--long-threshold", type=float, default=None)
+    p_run.add_argument("--short-threshold", type=float, default=None)
+    p_run.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
+    p_run.set_defaults(func=cmd_run)
 
     p_dl = sub.add_parser("download", help="Download/synthesize and cache history.", parents=[parent])
     p_dl.add_argument("--bars", type=int, default=None, help="Approx number of bars.")
