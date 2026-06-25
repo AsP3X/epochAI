@@ -15,7 +15,7 @@ Start with `agent.mdc`, then the rules referenced there:
 | `regression-testing.mdc` | pytest matrix, smoke paths, evidence before "done" |
 | `definition-of-done.mdc` | Pre-completion checklist |
 | `plan-execution.mdc` | Treat plans as binding checklists |
-| `git-commits.mdc` | Commit/push safety and message prefixes |
+| `git-commits.mdc` | Commit/push safety, **no PR unless you ask**, message prefixes |
 | `data-safety.mdc` | No wiping `artifacts/` or SQLite without permission |
 | `ml-causality.mdc` | No look-ahead leakage; walk-forward integrity |
 | `config-driven.mdc` | Pydantic + YAML for all tunables |

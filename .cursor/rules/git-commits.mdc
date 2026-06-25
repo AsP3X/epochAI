@@ -1,7 +1,8 @@
 ---
 description: >-
-  Git commits only on explicit user request (except Cloud Agent workflow);
-  TASK/FIX/BUGFIX/DOCS/CHORE message format; branch model; staging, safety, hooks
+  Git commits and pull requests only on explicit user request (except Cloud
+  Agent commit/push workflow); TASK/FIX/BUGFIX/DOCS/CHORE message format;
+  branch model; staging, safety, hooks
 alwaysApply: true
 ---
 
@@ -24,6 +25,14 @@ alwaysApply: true
 
 - **Do not** `git push` (or force-push) unless the user **explicitly** asks to push—or you are in a **Cloud Agent session** where push is part of the mandated workflow.
 - **Do not** merge or rebase branches unless the user **explicitly** asks (same spirit as commits).
+
+## Pull requests (strict — no exceptions)
+
+- **Never create, open, or register a pull request** unless the user **explicitly** asks in the current conversation (e.g. "open a PR", "create a pull request", "make a PR for this branch").
+- **Do not** create a PR because work is finished, because a branch was pushed, because cloud-agent defaults say to, or to "hand off" changes—**ask first** or stop after push with the branch name and let the user decide.
+- **Do not update** an existing PR (title, body, labels, draft status) unless the user **explicitly** asks for that update.
+- When the user has **not** requested a PR, it is OK to commit and push to a feature branch if otherwise allowed; report the branch name and offer to open a PR **only if they ask**—do not open one proactively.
+- Phrases like "submit this", "ship it", or "merge this" do **not** count as PR permission unless they clearly mean **create/open a pull request**—when in doubt, **ask**.
 
 ### Branch model (this project)
 
@@ -108,7 +117,7 @@ CHORE: Pin ruff to 0.5.x in requirements-dev.txt.
 
 ## Rules summary
 
-1. **No commit** without explicit request (Cloud Agent workflow excepted); **no push/merge/rebase** unless explicitly asked or cloud-mandated.
+1. **No commit** without explicit request (Cloud Agent workflow excepted); **no push/merge/rebase** unless explicitly asked or cloud-mandated; **no PR ever** unless the user explicitly requests one in the current conversation.
 2. **Branches:** `master` primary; `cursor/*-0713` for cloud agents; `feature/*` optional.
 3. **Staging:** only what belongs; surface unrelated dirty files; avoid `git add -A` without explicit "commit everything".
 4. **One logical change** per commit; offer splits or ask if mixed.
