@@ -1,0 +1,3 @@
+# Developer tooling: linting and testing. Stable wheels, safe for CI/startup.
+ruff>=0.5
+pytest>=8

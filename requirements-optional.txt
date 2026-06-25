@@ -1,0 +1,11 @@
+# Optional integrations. These enable richer functionality but are NOT required to
+# run the end-to-end progressive learning backtest. Each is imported lazily with a
+# graceful fallback so the core system runs even if these are absent.
+#
+#   pip install -r requirements-optional.txt
+#
+ccxt>=4.2           # live + historical exchange data (REST/WebSocket)
+vectorbt>=0.26      # vectorized portfolio backtesting (numba-backed)
+mlflow>=2.9         # experiment + model tracking
+river>=0.21         # online/incremental learning (future path)
+pandas_ta>=0.3.14b  # extended technical-analysis indicators

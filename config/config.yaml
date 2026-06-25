@@ -1,0 +1,101 @@
+# =============================================================================
+# epoch_ai - example configuration
+# =============================================================================
+# Focused on BTC/USDT perpetual futures, 15m candles, 4h (12-candle) horizon.
+# Adding more pairs is as simple as extending the `symbols` list.
+
+symbols:
+  - "BTC/USDT"
+timeframe: "15m"
+
+# -----------------------------------------------------------------------------
+# Data: maximise historical depth. BTC/USDT perp on Binance USDT-M starts ~2019-11.
+# If the exchange is unreachable (e.g. geo-blocked), a realistic synthetic dataset
+# is generated so the full pipeline runs offline.
+# -----------------------------------------------------------------------------
+data:
+  exchange: "binanceusdm"
+  market_type: "future"
+  historical_start_date: "2019-11-01"
+  data_dir: "artifacts/data"
+  use_synthetic_fallback: true
+  synthetic_seed: 7
+  rate_limit_ms: 250
+
+# -----------------------------------------------------------------------------
+# Feature groups (toggle on/off). Disabled groups are skipped entirely.
+# -----------------------------------------------------------------------------
+features:
+  technical: true
+  microstructure: true
+  derivatives: true
+  volatility: true
+  time: true
+  sentiment: false
+  onchain: false
+  dropna: true
+
+# -----------------------------------------------------------------------------
+# Prediction target: direction over a 12-candle (4h) horizon.
+# -----------------------------------------------------------------------------
+prediction:
+  horizon: 12
+  task: "classification"
+  threshold: 0.0
+
+# -----------------------------------------------------------------------------
+# LightGBM model.
+# -----------------------------------------------------------------------------
+model:
+  model_dir: "artifacts/models"
+  num_boost_round: 300
+  early_stopping_rounds: 30
+  params:
+    learning_rate: 0.03
+    num_leaves: 63
+    max_depth: -1
+    min_data_in_leaf: 50
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l1: 0.0
+    lambda_l2: 0.0
+    verbosity: -1
+
+# -----------------------------------------------------------------------------
+# *** Progressive historical learning (the heart of the system) ***
+# Train on the oldest data first, predict the next unseen period, ingest the real
+# outcomes + context, retrain, and march forward through all of history.
+# -----------------------------------------------------------------------------
+walk_forward:
+  initial_train_period: 2000   # candles used for the first fit (oldest data)
+  step_size: 200               # candles predicted + ingested per iteration
+  retrain_frequency: 1         # retrain every N steps (1 = every step)
+  expanding: true              # expanding window = full accumulated history
+  recency_half_life: null      # set to e.g. 5000 to emphasise recent regimes
+  max_steps: null              # cap iterations for quick demos (null = full run)
+
+# -----------------------------------------------------------------------------
+# Risk & execution (kept completely separate from prediction).
+# -----------------------------------------------------------------------------
+risk:
+  initial_capital: 10000.0
+  risk_per_trade: 0.02
+  max_leverage: 3.0
+  long_threshold: 0.55
+  short_threshold: 0.45
+  fee_rate: 0.0004
+  slippage: 0.0002
+  allow_short: true
+
+backtest:
+  use_vectorbt: false          # set true if vectorbt is installed
+  annualization_factor: null   # auto-derived from timeframe when null
+
+logging:
+  db_path: "artifacts/logs/predictions.sqlite"
+
+tracking:
+  enabled: false               # set true if mlflow is installed
+  tracking_uri: "artifacts/mlruns"
+  experiment_name: "epoch-ai"
