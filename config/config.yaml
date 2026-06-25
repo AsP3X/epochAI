@@ -100,8 +100,26 @@ execution:
   api_key_env: EPOCH_AI_API_KEY
   api_secret_env: EPOCH_AI_API_SECRET
   reserve_fraction: 0.2       # 20% of session wins set aside; 80% reinvested
+  cold_storage_fraction: 0.0  # additional fraction moved to cold storage
+  max_daily_profit_take: null # e.g. 500 to cap daily profit withdrawal
   treasury_state_path: artifacts/treasury.json
+  kill_switch_path: artifacts/kill_switch.json
+  audit_log_path: artifacts/audit/trades.jsonl
+  metrics_path: artifacts/metrics/runtime.jsonl
+  audit_enabled: true
+  metrics_enabled: true
+  calibration_min_accuracy: null  # e.g. 0.52 to block trades when OOS accuracy drops
+  calibration_min_samples: 30
   min_buffer_bars: 500
+
+api:
+  host: "127.0.0.1"
+  port: 8000
+
+telegram:
+  enabled: false
+  token_env: EPOCH_AI_TELEGRAM_TOKEN
+  allowed_chat_ids: []
 
 backtest:
   use_vectorbt: false          # set true if vectorbt is installed

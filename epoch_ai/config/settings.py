@@ -149,8 +149,50 @@ class ExecutionConfig(BaseModel):
         le=1.0,
         description="Fraction of session profits set aside (not reinvested).",
     )
+    cold_storage_fraction: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Additional fraction of session profits moved to cold storage.",
+    )
+    max_daily_profit_take: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Cap total daily profit withdrawal (reserved + cold storage).",
+    )
     treasury_state_path: str = "artifacts/treasury.json"
+    kill_switch_path: str = "artifacts/kill_switch.json"
+    audit_log_path: str = "artifacts/audit/trades.jsonl"
+    metrics_path: str = "artifacts/metrics/runtime.jsonl"
+    audit_enabled: bool = True
+    metrics_enabled: bool = True
+    calibration_min_accuracy: float | None = None
+    calibration_min_samples: int = 30
     min_buffer_bars: int = 500
+
+    @model_validator(mode="after")
+    def _validate_allocation_fractions(self) -> ExecutionConfig:
+        if self.reserve_fraction + self.cold_storage_fraction > 1.0:
+            raise ValueError(
+                "reserve_fraction + cold_storage_fraction must not exceed 1.0."
+            )
+        return self
+
+
+class ApiConfig(BaseModel):
+    """HTTP API server settings (FastAPI)."""
+
+    host: str = "127.0.0.1"
+    port: int = 8000
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+
+
+class TelegramConfig(BaseModel):
+    """Optional Telegram bot integration."""
+
+    enabled: bool = False
+    token_env: str = "EPOCH_AI_TELEGRAM_TOKEN"
+    allowed_chat_ids: list[int] = Field(default_factory=list)
 
 
 class BacktestConfig(BaseModel):
@@ -186,6 +228,8 @@ class AppConfig(BaseModel):
     walk_forward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    api: ApiConfig = Field(default_factory=ApiConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)

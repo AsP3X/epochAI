@@ -24,6 +24,8 @@ backtest = ["vectorbt>=0.26"]
 tracking = ["mlflow>=2.9"]
 online = ["river>=0.21"]
 ta = ["pandas_ta>=0.3.14b"]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+telegram = ["python-telegram-bot>=21"]
 dev = ["ruff>=0.5", "pytest>=8"]
 
 [project.scripts]

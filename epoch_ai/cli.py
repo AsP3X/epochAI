@@ -10,6 +10,12 @@ Sub-commands:
 * ``live``         - WebSocket stream or historical replay live loop.
 * ``retrain``      - periodic retrain from SQLite logs or parquet history.
 * ``tune``         - run a YAML sweep over config overrides.
+* ``promote``      - promote the best tune experiment to a config file.
+* ``export``       - export open-weights bundle + model card.
+* ``serve``        - start the FastAPI HTTP API.
+* ``telegram``     - start the optional Telegram bot.
+* ``kill-switch``  - halt or resume live trading globally.
+* ``schedule-retrain`` - periodic retrain loop.
 * ``info``         - print the resolved configuration.
 
 Run ``python -m epoch_ai <command> --help`` for details.
@@ -376,6 +382,105 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    """Export an open-weights bundle with a model card."""
+    from epoch_ai.export.model_card import export_bundle_with_card
+
+    config = _load(args)
+    path = export_bundle_with_card(
+        config,
+        dest=args.dest,
+        label=args.model_version,
+    )
+    print(f"Exported bundle: {path}")
+    print(f"Model card: {path / 'MODEL_CARD.md'}")
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Start the FastAPI HTTP server."""
+    config = _load(args)
+    try:
+        import uvicorn
+    except ImportError as exc:
+        logger.error("uvicorn required: pip install -r requirements-optional.txt")
+        raise SystemExit(1) from exc
+
+    from epoch_ai.api.app import create_app
+
+    app = create_app(config)
+    host = args.host or config.api.host
+    port = args.port or config.api.port
+    logger.info("Serving epochAI API at http://%s:%d", host, port)
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    """Promote the best tune sweep experiment to a config file."""
+    from epoch_ai.tuning.promote import promote_best
+
+    result = promote_best(
+        args.config,
+        args.sweep_out,
+        metric=args.metric,
+        dest=args.out,
+    )
+    print("\n=== Promote complete ===")
+    print(f"Experiment        : {result.experiment}")
+    print(f"{result.metric:<18}: {result.metric_value:.4f}")
+    if result.promoted_config_path:
+        print(f"Config written    : {result.promoted_config_path}")
+    return 0
+
+
+def cmd_kill_switch(args: argparse.Namespace) -> int:
+    """Halt or resume live trading via the global kill switch."""
+    from epoch_ai.execution.kill_switch import KillSwitch
+
+    config = _load(args)
+    ks = KillSwitch(config.execution.kill_switch_path)
+    if args.action == "halt":
+        state = ks.halt(args.reason)
+        print(f"HALTED: {state.reason}")
+    elif args.action == "resume":
+        state = ks.resume()
+        print(f"RESUMED at {state.updated_at}")
+    else:
+        state = ks.read()
+        print(json.dumps({"halted": state.halted, "reason": state.reason, "updated_at": state.updated_at}))
+    return 0
+
+
+def cmd_telegram(args: argparse.Namespace) -> int:
+    """Start the optional Telegram bot."""
+    from epoch_ai.bots.telegram_bot import run_telegram_bot
+
+    config = _load(args)
+    run_telegram_bot(config)
+    return 0
+
+
+def cmd_schedule_retrain(args: argparse.Namespace) -> int:
+    """Run periodic retraining on a fixed interval."""
+    from epoch_ai.learning.scheduler import run_retrain_scheduler
+
+    config = _load(args)
+    results = run_retrain_scheduler(
+        config,
+        interval_hours=args.interval_hours,
+        min_new_samples=args.min_new_samples,
+        max_cycles=args.max_cycles,
+    )
+    print(f"Completed {len(results)} retrain cycle(s).")
+    for idx, result in enumerate(results, start=1):
+        print(
+            f"  cycle {idx}: version={result.model_version} rows={result.train_rows} "
+            f"skipped={result.skipped}"
+        )
+    return 0
+
+
 # ------------------------------------------------------------------- reporting
 def _print_report(config: AppConfig, result, store: PredictionStore | None) -> None:
     m = result.metrics
@@ -586,6 +691,58 @@ def build_parser() -> argparse.ArgumentParser:
     p_info = sub.add_parser("info", help="Print resolved configuration.", parents=[parent])
     p_info.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
     p_info.set_defaults(func=cmd_info)
+
+    p_export = sub.add_parser("export", help="Export open-weights bundle + model card.", parents=[parent])
+    p_export.add_argument("--dest", default="artifacts/exports", help="Output directory.")
+    p_export.add_argument("--model-version", default=None, help="Registry label (default: latest).")
+    p_export.set_defaults(func=cmd_export)
+
+    p_serve = sub.add_parser("serve", help="Start FastAPI HTTP API.", parents=[parent])
+    p_serve.add_argument("--host", default=None, help="Bind host (default: config.api.host).")
+    p_serve.add_argument("--port", type=int, default=None, help="Bind port (default: config.api.port).")
+    p_serve.set_defaults(func=cmd_serve)
+
+    p_promote = sub.add_parser("promote", help="Promote best tune experiment.", parents=[parent])
+    p_promote.add_argument(
+        "--sweep-out",
+        default="artifacts/sweeps",
+        help="Directory written by tune command.",
+    )
+    p_promote.add_argument("--metric", default="sharpe", help="Metric to maximize.")
+    p_promote.add_argument(
+        "--out",
+        default="config/promoted.yaml",
+        help="Path for promoted config YAML.",
+    )
+    p_promote.set_defaults(func=cmd_promote)
+
+    p_kill = sub.add_parser("kill-switch", help="Global trading halt control.", parents=[parent])
+    p_kill.add_argument("action", choices=["status", "halt", "resume"], nargs="?", default="status")
+    p_kill.add_argument("--reason", default="manual halt via CLI", help="Halt reason.")
+    p_kill.set_defaults(func=cmd_kill_switch)
+
+    p_tg = sub.add_parser("telegram", help="Start optional Telegram bot.", parents=[parent])
+    p_tg.set_defaults(func=cmd_telegram)
+
+    p_sched = sub.add_parser(
+        "schedule-retrain",
+        help="Periodic retrain scheduler loop.",
+        parents=[parent],
+    )
+    p_sched.add_argument("--interval-hours", type=float, default=24.0, help="Hours between retrains.")
+    p_sched.add_argument(
+        "--min-new-samples",
+        type=int,
+        default=50,
+        help="Minimum joined SQLite rows for log-based retrain.",
+    )
+    p_sched.add_argument(
+        "--max-cycles",
+        type=int,
+        default=1,
+        help="Stop after N cycles (default 1 for smoke; omit loop with large value).",
+    )
+    p_sched.set_defaults(func=cmd_schedule_retrain)
 
     return parser
 

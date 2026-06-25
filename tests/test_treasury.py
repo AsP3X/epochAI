@@ -30,6 +30,32 @@ def test_treasury_loss_reinvests(tmp_path):
     assert snap.last_session_pnl == -500.0
 
 
+def test_treasury_cold_storage(tmp_path):
+    treasury = Treasury(
+        trading_capital=10_000.0,
+        reserve_fraction=0.2,
+        cold_storage_fraction=0.1,
+        state_path=str(tmp_path / "treasury.json"),
+    )
+    snap = treasury.allocate_session_pnl(1_000.0)
+    assert snap.last_reserved == 200.0
+    assert snap.last_cold_storage == 100.0
+    assert snap.last_reinvested == 700.0
+    assert treasury.cold_storage_wins == 100.0
+
+
+def test_treasury_max_daily_profit_take(tmp_path):
+    treasury = Treasury(
+        trading_capital=10_000.0,
+        reserve_fraction=0.5,
+        max_daily_profit_take=100.0,
+        state_path=str(tmp_path / "treasury.json"),
+    )
+    snap = treasury.allocate_session_pnl(1_000.0)
+    assert snap.last_reserved == 100.0
+    assert snap.last_reinvested == 900.0
+
+
 def test_treasury_persist_reload(tmp_path):
     path = str(tmp_path / "treasury.json")
     t1 = Treasury(trading_capital=5_000.0, reserve_fraction=0.2, state_path=path)
