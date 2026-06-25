@@ -18,7 +18,7 @@ data:
   market_type: "future"
   historical_start_date: "2019-11-01"
   data_dir: "artifacts/data"
-  use_synthetic_fallback: true
+  use_synthetic_fallback: false
   synthetic_seed: 7
   rate_limit_ms: 250
 

@@ -7,7 +7,7 @@ name = "epoch-ai"
 version = "0.1.0"
 description = "Self-improving crypto AI trading prediction system with progressive walk-forward learning."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26,<3",
     "pandas>=2.1,<3",
@@ -23,7 +23,7 @@ exchange = ["ccxt>=4.2"]
 backtest = ["vectorbt>=0.26"]
 tracking = ["mlflow>=2.9"]
 online = ["river>=0.21"]
-ta = ["pandas_ta>=0.3.14b"]
+ta = ["pandas-ta>=0.4.67b0"]
 api = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
 telegram = ["python-telegram-bot>=21"]
 dev = ["ruff>=0.5", "pytest>=8"]
@@ -36,7 +36,7 @@ packages = ["epoch_ai"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]

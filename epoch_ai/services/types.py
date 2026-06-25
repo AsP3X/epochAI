@@ -15,6 +15,7 @@ class PredictionResult:
     raw_prediction: float
     decision: RiskDecision
     model_version: str
+    features: dict[str, float] | None = None
 
 
 @dataclass(slots=True)

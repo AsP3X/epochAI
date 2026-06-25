@@ -8,7 +8,7 @@ ccxt>=4.2           # live + historical exchange data (REST/WebSocket)
 vectorbt>=0.26      # vectorized portfolio backtesting (numba-backed)
 mlflow>=2.9         # experiment + model tracking
 river>=0.21         # online/incremental learning (future path)
-pandas_ta>=0.3.14b  # extended technical-analysis indicators
+pandas-ta>=0.4.67b0  # extended TA indicators (requires Python >=3.12; import as pandas_ta)
 fastapi>=0.110      # HTTP API (serve command)
 uvicorn[standard]>=0.27  # ASGI server for FastAPI
 python-telegram-bot>=21  # optional Telegram bot

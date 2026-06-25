@@ -248,7 +248,7 @@ Architecture decisions: `docs/adr/`.
 
 ## Tech stack
 
-Python 3.11+ · pandas/numpy · LightGBM · Pydantic + YAML · SQLite + Parquet ·
+Python 3.12+ · pandas/numpy · LightGBM · Pydantic + YAML · SQLite + Parquet ·
 scikit-learn. Optional: ccxt, vectorbt, mlflow, river, pandas_ta.
 
 ## Disclaimer

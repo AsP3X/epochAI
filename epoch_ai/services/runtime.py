@@ -73,7 +73,9 @@ class RuntimeService:
         """Predict on the **latest** bar of a OHLCV frame."""
         if market.empty:
             raise ValueError("Cannot predict on empty market data.")
-        features = self.pipeline.transform(market)
+        # Human: Live ticks call this every bar; skip noisy pipeline INFO each time.
+        # Agent: log_stats=False; RETURNS feature dict for SQLite logging without re-transform.
+        features = self.pipeline.transform(market, log_stats=False)
         model = self._require_model()
         ts = market.index[-1]
         row = features.iloc[[-1]]
@@ -84,6 +86,7 @@ class RuntimeService:
             raw_prediction=raw,
             decision=decision,
             model_version=self._model_version or "unknown",
+            features={k: float(v) for k, v in row.iloc[0].items()},
         )
 
     def run_session(

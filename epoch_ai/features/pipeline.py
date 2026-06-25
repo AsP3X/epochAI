@@ -34,11 +34,12 @@ class FeaturePipeline:
             raise RuntimeError("Call transform() before accessing feature_names.")
         return self._feature_names
 
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame, *, log_stats: bool = True) -> pd.DataFrame:
         """Compute and concatenate features for all enabled groups.
 
         Args:
             df: Cleaned OHLCV(+context) frame indexed by ``timestamp``.
+            log_stats: When ``False``, skip per-call INFO logs (used on live ticks).
 
         Returns:
             Feature matrix indexed by ``timestamp``; infinite values are replaced
@@ -53,17 +54,19 @@ class FeaturePipeline:
 
         features = pd.concat(frames, axis=1)
         features = features.replace([np.inf, -np.inf], np.nan)
-        logger.info(
-            "Computed %d features across %d groups for %d bars.",
-            features.shape[1],
-            len(self.groups),
-            len(features),
-        )
+        if log_stats:
+            logger.info(
+                "Computed %d features across %d groups for %d bars.",
+                features.shape[1],
+                len(self.groups),
+                len(features),
+            )
 
         if self.config.features.dropna:
             before = len(features)
             features = features.dropna()
-            logger.info("Dropped %d warm-up rows with NaN features.", before - len(features))
+            if log_stats:
+                logger.info("Dropped %d warm-up rows with NaN features.", before - len(features))
 
         self._feature_names = list(features.columns)
         return features

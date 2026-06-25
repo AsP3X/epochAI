@@ -1,7 +1,7 @@
 """Classic technical-analysis indicators.
 
 Implemented in pure pandas/numpy so the system has **no hard dependency** on the
-notoriously fragile ``pandas_ta`` package. (If ``pandas_ta`` is installed it can be
+notoriously fragile ``pandas_ta`` / ``pandas-ta`` package. (If installed it can be
 used to extend this group, but it is never required.)
 
 All look-back windows are passed in from :class:`~epoch_ai.config.settings.FeatureConfig`

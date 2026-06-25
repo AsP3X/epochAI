@@ -14,7 +14,6 @@ from epoch_ai.execution.executor import Fill, TradeExecutor, build_executor
 from epoch_ai.execution.kill_switch import KillSwitch
 from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.treasury import Treasury, TreasurySnapshot
-from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.monitoring.metrics import MetricsRecorder
@@ -179,8 +178,7 @@ class LiveTradingEngine:
                 self._portfolio,
             )
 
-        features = FeaturePipeline(self.config).transform(market)
-        feature_row = features.iloc[-1].to_dict()
+        feature_row = pred.features or {}
 
         halted = self.kill_switch.is_halted()
         calibration_blocked = False
@@ -258,7 +256,7 @@ class LiveTradingEngine:
                     confidence=pred.decision.confidence,
                     signal=pred.decision.signal,
                     entry_price=close,
-                    features={k: float(v) for k, v in feature_row.items()},
+                    features=feature_row,
                 )
             )
             self._pending.append(
