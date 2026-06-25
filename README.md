@@ -95,6 +95,28 @@ held-out tail predicting, applying risk rules and paper-executing (fees + slippa
 mark-to-market). The threshold overrides force directional positions on
 hard-to-predict data so the execution path is exercised.
 
+Use `--retrain-every N` for inline expanding-window retrains during the replay.
+
+### 4. Hyperparameter sweep and config overrides
+
+```bash
+python -m epoch_ai tune --sweep config/sweeps/example.yaml --bars 4000 --max-steps 3
+python -m epoch_ai backtest --set walk_forward.step_size=100 --max-steps 5
+```
+
+### 5. Periodic retrain from logs
+
+```bash
+python -m epoch_ai retrain --min-new-samples 50
+```
+
+### 6. Live replay (offline) or WebSocket stream
+
+```bash
+python -m epoch_ai live --replay --bars 6000 --live-bars 300
+# python -m epoch_ai live   # requires ccxt.pro + reachable exchange
+```
+
 ### Inspect the resolved configuration
 
 ```bash
@@ -121,7 +143,14 @@ predict → collect outcomes + context → append samples → retrain → advanc
 ```bash
 ruff check .                 # lint
 pytest                       # tests
+pre-commit install           # optional local hooks (ruff + pytest)
 ```
+
+CI runs **ruff** and **pytest** on every push to `master` (`.github/workflows/ci.yml`).
+
+Backtest artifacts now include `learning_curve.json` (rolling OOS accuracy, trend slope).
+
+Architecture decisions: `docs/adr/`.
 
 ## Tech stack
 

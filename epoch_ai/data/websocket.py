@@ -29,6 +29,7 @@ class RealtimeDataHandler:
         self._buffers: dict[str, deque] = {
             symbol: deque(maxlen=buffer_size) for symbol in config.symbols
         }
+        self._last_ts: dict[str, int | None] = dict.fromkeys(config.symbols)
 
     def get_frame(self, symbol: str) -> pd.DataFrame:
         """Return the current rolling buffer for ``symbol`` as a DataFrame."""
@@ -39,6 +40,15 @@ class RealtimeDataHandler:
         df["timestamp"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
         return df.drop(columns="ts").set_index("timestamp")
 
+    def ingest_candle(self, symbol: str, candle: list) -> bool:
+        """Append one OHLCV candle if it is new; return whether the buffer changed."""
+        ts = int(candle[0])
+        if self._last_ts.get(symbol) == ts:
+            return False
+        self._buffers[symbol].append(candle)
+        self._last_ts[symbol] = ts
+        return True
+
     async def stream(
         self,
         on_candle: Callable[[str, pd.DataFrame], None] | None = None,
@@ -47,7 +57,7 @@ class RealtimeDataHandler:
 
         Args:
             on_candle: Optional callback invoked with ``(symbol, frame)`` whenever a
-                new candle closes.
+                new candle timestamp is observed.
 
         Raises:
             RuntimeError: If ``ccxt.pro`` is not available.
@@ -67,9 +77,8 @@ class RealtimeDataHandler:
                 for symbol in self.config.symbols:
                     candles = await exchange.watch_ohlcv(symbol, self.config.timeframe)
                     for candle in candles:
-                        self._buffers[symbol].append(candle)
-                    if on_candle is not None:
-                        on_candle(symbol, self.get_frame(symbol))
+                        if self.ingest_candle(symbol, candle) and on_candle is not None:
+                            on_candle(symbol, self.get_frame(symbol))
         except asyncio.CancelledError:  # pragma: no cover - cooperative shutdown
             logger.info("WebSocket stream cancelled; closing exchange.")
         finally:  # pragma: no cover - network teardown

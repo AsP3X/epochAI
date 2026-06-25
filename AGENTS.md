@@ -24,6 +24,24 @@ Start with `agent.mdc`, then the rules referenced there:
 | `inline-documentation.mdc` | `# Human:` / `# Agent:` comments on non-trivial Python |
 | `documentation.mdc` | README/AGENTS sync expectations |
 
+## New CLI commands
+
+| Command | Purpose |
+| --- | --- |
+| `tune --sweep config/sweeps/example.yaml` | YAML hyperparameter sweep |
+| `retrain --min-new-samples 50` | Retrain from SQLite logs or parquet fallback |
+| `live --replay` | Historical live-loop replay (offline-safe) |
+| `--set walk_forward.step_size=100` | Dotted config overrides on any command |
+
+## Agent command playbooks
+
+See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-smoke`, etc.).
+
+## CI and hooks
+
+- **GitHub Actions:** `.github/workflows/ci.yml` (ruff + pytest)
+- **Pre-commit:** `.pre-commit-config.yaml` — run `pre-commit install` locally
+
 ## Architecture (one-liner per module)
 
 - `epoch_ai/config` — Pydantic config + YAML loader (everything is config-driven).

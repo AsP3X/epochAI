@@ -87,6 +87,10 @@ risk:
   fee_rate: 0.0004
   slippage: 0.0002
   allow_short: true
+  min_confidence: 0.0
+  max_drawdown_halt: null     # e.g. 0.15 to halt new entries after 15% drawdown
+  max_daily_loss: null        # e.g. 0.05 to halt after 5% session loss
+  cooldown_bars: 0            # flat bars after a losing period
 
 backtest:
   use_vectorbt: false          # set true if vectorbt is installed

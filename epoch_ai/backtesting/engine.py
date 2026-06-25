@@ -17,6 +17,7 @@ import pandas as pd
 from epoch_ai.backtesting.metrics import compute_metrics
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.features.pipeline import FeaturePipeline
+from epoch_ai.learning.curve_analysis import summarize_step_history
 from epoch_ai.learning.progressive import ProgressiveLearningEngine, ProgressiveResult
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.utils.logging import get_logger
@@ -35,6 +36,7 @@ class BacktestResult:
     strategy_returns: pd.Series
     learning: ProgressiveResult
     learning_improvement: dict[str, float]
+    learning_curve: dict[str, float]
 
 
 class Backtester:
@@ -106,6 +108,7 @@ class Backtester:
         equity = (1.0 + strat).cumprod() * self.config.risk.initial_capital
 
         improvement = self._learning_improvement(learning.step_history)
+        curve = summarize_step_history(learning.step_history)
 
         logger.info(
             "Backtest complete: Sharpe=%.2f total_return=%.2f%% max_dd=%.2f%% trades=%d",
@@ -121,6 +124,7 @@ class Backtester:
             strategy_returns=strat,
             learning=learning,
             learning_improvement=improvement,
+            learning_curve=curve,
         )
 
     @staticmethod

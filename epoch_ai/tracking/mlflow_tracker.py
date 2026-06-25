@@ -7,7 +7,10 @@ never need to branch on availability.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 from epoch_ai.config.settings import TrackingConfig
 from epoch_ai.utils.logging import get_logger
@@ -49,9 +52,29 @@ class MLflowTracker:
     def log_params(self, params: dict[str, Any]) -> None:
         """Log a dict of parameters."""
         if self._mlflow is not None:
-            self._mlflow.log_params(params)
+            flat = {k: str(v) for k, v in params.items()}
+            self._mlflow.log_params(flat)
 
     def log_metrics(self, metrics: dict[str, float]) -> None:
         """Log a dict of numeric metrics."""
         if self._mlflow is not None:
             self._mlflow.log_metrics({k: float(v) for k, v in metrics.items()})
+
+    def log_learning_metrics(
+        self,
+        step_history: pd.DataFrame,
+        learning_improvement: dict[str, float],
+        learning_curve: dict[str, float],
+    ) -> None:
+        """Log walk-forward learning diagnostics."""
+        if self._mlflow is None:
+            return
+        self.log_metrics({f"learning_{k}": v for k, v in learning_improvement.items()})
+        self.log_metrics({f"curve_{k}": v for k, v in learning_curve.items()})
+        if not step_history.empty and "oos_accuracy" in step_history.columns:
+            self.log_metrics({"final_step_oos_accuracy": float(step_history["oos_accuracy"].iloc[-1])})
+
+    def log_artifact(self, path: str | Path) -> None:
+        """Log a file artifact when MLflow is active."""
+        if self._mlflow is not None:
+            self._mlflow.log_artifact(str(path))

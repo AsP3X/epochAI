@@ -1,0 +1,12 @@
+# Example hyperparameter sweep for `python -m epoch_ai tune --sweep config/sweeps/example.yaml`
+experiments:
+  - name: baseline
+    overrides: {}
+
+  - name: smaller_steps
+    overrides:
+      walk_forward.step_size: 100
+
+  - name: recency_weighted
+    overrides:
+      walk_forward.recency_half_life: 2000

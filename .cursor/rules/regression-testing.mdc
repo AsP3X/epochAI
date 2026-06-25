@@ -37,6 +37,7 @@ New features and refactors must **not break existing behavior**. Treat regressio
 | **Lint** | `.venv/bin/ruff check .` | Run on all Python changes; fix new violations. |
 | **CLI smoke** | `python -m epoch_ai info` | Fast config-resolution check after CLI/config changes. |
 | **Pipeline smoke** | `python -m epoch_ai backtest --bars 8000 --max-steps 12` | End-to-end walk-forward on synthetic data (slow; use when engine/backtest paths change). |
+| **Tune / retrain / live** | `tests/test_cli.py`, `tests/test_retrain_job.py`, `tests/test_websocket.py` | New subcommands and execution paths. |
 
 Fixtures live in `tests/conftest.py` (`market` synthetic OHLCV, `small_config` fast walk-forward settings).
 
@@ -54,7 +55,7 @@ Run **all rows that apply**; when in doubt, run the broader set.
 | **Logging store / schemas** | `pytest tests/test_logging_store.py` |
 | **Synthetic downloader / data cleaning** | `pytest tests/test_synthetic.py`; downstream feature tests if schema changed |
 | **Backtester / metrics** | `pytest tests/test_metrics.py`; backtest smoke if integration paths changed |
-| **Risk / paper trader** | Full `pytest`; manual paper-trade smoke with threshold overrides if behavior is execution-visible |
+| **Risk / paper trader / live loop** | `tests/test_risk.py`, `tests/test_paper_trader.py` | Full `pytest`; manual paper-trade smoke with threshold overrides if behavior is execution-visible |
 | **CLI commands or argparse** | `python -m epoch_ai info`; targeted command smoke for changed subcommand |
 | **Cross-cutting refactor** | Full `pytest` + `ruff check .` + CLI/backtest smoke as appropriate |
 

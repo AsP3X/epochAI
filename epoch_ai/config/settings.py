@@ -129,6 +129,10 @@ class RiskConfig(BaseModel):
     fee_rate: float = 0.0004
     slippage: float = 0.0002
     allow_short: bool = True
+    min_confidence: float = 0.0
+    max_drawdown_halt: float | None = None
+    max_daily_loss: float | None = None
+    cooldown_bars: int = 0
 
 
 class BacktestConfig(BaseModel):
