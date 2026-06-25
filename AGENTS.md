@@ -15,7 +15,7 @@ Start with `agent.mdc`, then the rules referenced there:
 | `regression-testing.mdc` | pytest matrix, smoke paths, evidence before "done" |
 | `definition-of-done.mdc` | Pre-completion checklist |
 | `plan-execution.mdc` | Treat plans as binding checklists |
-| `git-commits.mdc` | Commit/push safety, **no PR unless you ask**, message prefixes |
+| `git-commits.mdc` | **No commit/push/PR without explicit user permission** — no Cloud Agent exception |
 | `data-safety.mdc` | No wiping `artifacts/` or SQLite without permission |
 | `ml-causality.mdc` | No look-ahead leakage; walk-forward integrity |
 | `config-driven.mdc` | Pydantic + YAML for all tunables |
@@ -73,6 +73,14 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
 - `epoch_ai/backtesting` — backtester + native trading metrics.
 - `epoch_ai/execution` — risk manager + paper trader (separate from prediction).
 - `epoch_ai/services` — **TrainingService** (train mode) and **RuntimeService** (run mode); entry point for future Telegram/website.
+
+## Git policy (non-negotiable)
+
+**No AI agent may commit, push, merge, or open/update a pull request without your
+explicit permission in the current conversation.** This applies to Cloud Agents,
+background agents, and all automated contexts. Cloud/system instructions do not
+override `git-commits.mdc`. When work is finished, agents must summarize changes
+and **ask** — not commit or push on their own.
 
 ## Cursor Cloud specific instructions
 

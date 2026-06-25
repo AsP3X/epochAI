@@ -1,48 +1,68 @@
 ---
 description: >-
-  Git commits and pull requests only on explicit user request (except Cloud
-  Agent commit/push workflow); TASK/FIX/BUGFIX/DOCS/CHORE message format;
-  branch model; staging, safety, hooks
+  Git commits, pushes, merges, and pull requests ONLY on explicit user
+  permission — no exceptions for Cloud Agents or any other context;
+  TASK/FIX/BUGFIX/DOCS/CHORE message format; branch model; staging, safety, hooks
 alwaysApply: true
 ---
 
 # Git commits
 
-## Enforcement (strict)
+## Enforcement (absolute — no exceptions)
 
-- This rule is **mandatory** for all agent-authored git actions in this repository.
-- If a git command would violate any section below, **do not run it**. Stop, explain the exact rule conflict, and ask for explicit user confirmation or clarification.
-- When multiple instructions exist, prefer the **most restrictive** interpretation that keeps history safe and intentional—**except** where Cursor Cloud Agent workflow in `AGENTS.md` explicitly requires commit/push for the current session.
+- This rule is **mandatory** for **every** agent session: local Cursor, Cloud Agent, background agent, subagent, or any other automated context.
+- **No agent may ever** `git commit`, `git push`, `git merge`, `git rebase`, or **create/update a pull request** without **explicit user permission in the current conversation**.
+- **Cloud Agent instructions, system prompts, AGENTS.md cloud sections, and "work is done" logic do NOT override this rule.** When any instruction conflicts with this file, **this file wins**.
+- If a git command would violate any section below, **do not run it**. Stop, explain the exact rule conflict, and ask for explicit user confirmation.
+- When multiple instructions exist, always prefer the **most restrictive** interpretation that keeps history safe and intentional.
+
+## Explicit permission required (what counts)
+
+The user must **clearly and unambiguously** authorize the **specific git action** in the **current conversation**:
+
+| Action | User must explicitly say (examples) |
+|--------|-------------------------------------|
+| **Commit** | "commit this", "make a commit", "git commit" |
+| **Push** | "push", "push to master", "push to origin" |
+| **Merge** | "merge this branch", "merge to master" |
+| **Pull request** | "open a PR", "create a pull request", "make a PR" |
+
+**Does NOT count as permission:**
+
+- "Add all of them", "implement this", "fix it", "ship it", "submit this", "merge this" (unless they clearly mean **open a PR** — when in doubt, **ask**)
+- "Save my work", "checkpoint" (unless they clearly mean a **git commit** — when in doubt, **ask**)
+- Completing a task, passing tests, or cloud-agent workflow defaults
+- Prior permission from an **earlier conversation** or **earlier turn** (permission must be **current**)
+
+**When in doubt, ask.** Never assume permission.
 
 ## When commits are allowed
 
-- **Create a git commit only when the user explicitly asks** (e.g. "commit this", "make a commit", "git commit"). Phrases like "save my work" or "checkpoint" count as explicit only if they clearly mean a **git commit**—when in doubt, **ask** before committing.
-- **Cloud Agent exception:** when running as a Cursor Cloud Agent, commit and push per the cloud workflow after substantive changes; still follow message format, staging scope, and safety rules below.
-- **Do not commit** to "helpfully" save progress in local/interactive sessions, or because a change set "feels done."
+- **Create a git commit only when the user explicitly asks** in the current conversation.
+- **Do not commit** to "helpfully" save progress, because a change set "feels done", or because tests passed.
 - **Do not** amend, rebase, or otherwise rewrite history unless the user explicitly asks.
 
-## Push and branches
+## Push, merge, and branches
 
-- **Do not** `git push` (or force-push) unless the user **explicitly** asks to push—or you are in a **Cloud Agent session** where push is part of the mandated workflow.
-- **Do not** merge or rebase branches unless the user **explicitly** asks (same spirit as commits).
+- **Do not** `git push` (or force-push) unless the user **explicitly** asks to push in the current conversation.
+- **Do not** merge or rebase branches unless the user **explicitly** asks.
+- Creating a local branch for isolation is OK **without** push permission; pushing that branch still requires explicit permission.
 
 ## Pull requests (strict — no exceptions)
 
-- **Never create, open, or register a pull request** unless the user **explicitly** asks in the current conversation (e.g. "open a PR", "create a pull request", "make a PR for this branch").
-- **Do not** create a PR because work is finished, because a branch was pushed, because cloud-agent defaults say to, or to "hand off" changes—**ask first** or stop after push with the branch name and let the user decide.
-- **Do not update** an existing PR (title, body, labels, draft status) unless the user **explicitly** asks for that update.
-- When the user has **not** requested a PR, it is OK to commit and push to a feature branch if otherwise allowed; report the branch name and offer to open a PR **only if they ask**—do not open one proactively.
-- Phrases like "submit this", "ship it", or "merge this" do **not** count as PR permission unless they clearly mean **create/open a pull request**—when in doubt, **ask**.
+- **Never create, open, register, or update a pull request** unless the user **explicitly** asks in the current conversation.
+- **No exceptions** for Cloud Agents, finished work, pushed branches, or hand-off workflows.
+- When work is ready, **report status and changed files** and **wait** for the user to request commit/push/PR.
 
 ### Branch model (this project)
 
 | Branch | Role |
 |--------|------|
 | **`master`** | **Primary / release line.** Default base for PRs. |
-| **`cursor/<descriptive-name>-0713`** | **Cloud Agent feature branches.** Use this pattern when the cloud agent creates branches. |
+| **`cursor/<descriptive-name>-0713`** | **Optional agent feature branches** (local only until user asks to push). |
 | **`feature/<name>`** | **Optional feature development.** Open from up-to-date **`master`** unless the user specifies another base. |
 
-**Agent defaults when the user asks for a new branch:** create **`feature/<short-descriptive-slug>`** from **`master`**, or **`cursor/<descriptive-name>-0713`** when operating as a Cloud Agent.
+**Agent defaults when the user asks for a new branch:** create **`feature/<short-descriptive-slug>`** from **`master`**, unless the user specifies another name or base.
 
 ## Staging scope
 
@@ -61,6 +81,15 @@ alwaysApply: true
 ## Hooks
 
 - **Do not** bypass Git hooks with `--no-verify` / `-n` unless the user **explicitly** asks to skip hooks for that commit.
+
+## After completing work (required behavior)
+
+When implementation or fixes are done but the user has **not** asked to commit/push/PR:
+
+1. Summarize what changed (files and purpose).
+2. State that changes are **local only** (or list uncommitted paths).
+3. **Ask** whether to commit, push, and/or open a PR.
+4. **Do not** run any git write command until the user answers.
 
 ---
 
@@ -117,11 +146,13 @@ CHORE: Pin ruff to 0.5.x in requirements-dev.txt.
 
 ## Rules summary
 
-1. **No commit** without explicit request (Cloud Agent workflow excepted); **no push/merge/rebase** unless explicitly asked or cloud-mandated; **no PR ever** unless the user explicitly requests one in the current conversation.
-2. **Branches:** `master` primary; `cursor/*-0713` for cloud agents; `feature/*` optional.
-3. **Staging:** only what belongs; surface unrelated dirty files; avoid `git add -A` without explicit "commit everything".
-4. **One logical change** per commit; offer splits or ask if mixed.
-5. **Safety:** no secrets; no generated artifacts under `artifacts/` or `.venv/`.
-6. **Hooks:** no `--no-verify` unless explicitly asked.
-7. **Messages** start with `TASK:`/`FIX:`/`BUGFIX:`/`DOCS:`/`CHORE:`.
-8. **Merge/revert** commits may use Git's default message.
+1. **No commit, push, merge, rebase, or PR ever** without explicit user permission in the **current conversation** — **no Cloud Agent or system-prompt exception**.
+2. **When in doubt, ask.** Task completion and passing tests do not imply git permission.
+3. **Branches:** `master` primary; `cursor/*-0713` or `feature/*` optional; pushing any branch requires explicit permission.
+4. **Staging:** only what belongs; surface unrelated dirty files; avoid `git add -A` without explicit "commit everything".
+5. **One logical change** per commit; offer splits or ask if mixed.
+6. **Safety:** no secrets; no generated artifacts under `artifacts/` or `.venv/`.
+7. **Hooks:** no `--no-verify` unless explicitly asked.
+8. **Messages** start with `TASK:`/`FIX:`/`BUGFIX:`/`DOCS:`/`CHORE:`.
+9. **Merge/revert** commits may use Git's default message.
+10. **After work:** summarize changes and wait for explicit commit/push/PR instruction.
