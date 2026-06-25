@@ -27,6 +27,8 @@ import pandas as pd
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import build_target, forward_return
+from epoch_ai.learning.step_metrics import classification_step_metrics, regression_step_metrics
+from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.lightgbm_model import LightGBMModel
@@ -66,11 +68,8 @@ class ProgressiveLearningEngine:
     # ------------------------------------------------------------------- helpers
     def _sample_weights(self, n: int) -> np.ndarray | None:
         """Recency-decayed sample weights for the current training set."""
-        half_life = self.config.walk_forward.recency_half_life
-        if not half_life:
-            return None
-        age = np.arange(n)[::-1]  # 0 = most recent
-        return np.power(0.5, age / float(half_life)).astype(np.float64)
+        # Agent: CALLS recency_weights; CAUSAL weights depend only on row age (oldest-first).
+        return recency_weights(n, self.config.walk_forward.recency_half_life)
 
     def _context(self, market: pd.DataFrame, entry_pos: int, horizon: int) -> dict[str, float]:
         """Capture rich influencing context realised during the holding period."""
@@ -175,15 +174,23 @@ class ProgressiveLearningEngine:
             test_end = min(cutoff + wf.step_size, n)
             x_test = x_all.iloc[cutoff:test_end]
             preds = model.predict(x_test)
+            is_classification = self.config.prediction.task == "classification"
 
-            step_correct = 0
-            step_logloss = 0.0
+            # Collect per-bar arrays for honest out-of-sample step metrics.
+            step_preds: list[float] = []
+            step_labels: list[int] = []
+            step_returns: list[float] = []
             for offset, raw_pred in enumerate(preds):
                 pos = cutoff + offset
                 ts = ts_all[pos]
                 entry_price = float(data["close"].iloc[pos])
                 realized_ret = float(fwd_all.iloc[pos])
-                realized_label = int(realized_ret > self.config.prediction.threshold)
+                # Align the logged label with the pre-built training target instead of
+                # recomputing the threshold rule (single source of truth, no drift).
+                if is_classification:
+                    realized_label = int(y_all.iloc[pos])
+                else:
+                    realized_label = int(realized_ret > self.config.prediction.threshold)
 
                 decision = self.risk_manager.decide(float(raw_pred))
                 pred_records.append(
@@ -198,14 +205,9 @@ class ProgressiveLearningEngine:
                         "model_version": model_version,
                     }
                 )
-
-                # Out-of-sample accuracy / logloss for the learning curve.
-                if self.config.prediction.task == "classification":
-                    p = min(max(float(raw_pred), 1e-6), 1 - 1e-6)
-                    step_logloss += -(
-                        realized_label * np.log(p) + (1 - realized_label) * np.log(1 - p)
-                    )
-                    step_correct += int((p >= 0.5) == bool(realized_label))
+                step_preds.append(float(raw_pred))
+                step_labels.append(realized_label)
+                step_returns.append(realized_ret)
 
                 # Persist prediction + outcome (+ context) to the store.
                 if store is not None:
@@ -244,24 +246,50 @@ class ProgressiveLearningEngine:
 
             n_step = len(preds)
             if n_step > 0:
-                step_records.append(
-                    {
-                        "step": step_idx,
-                        "train_end": ts_all[cutoff - 1],
-                        "train_rows": cutoff - train_start,
-                        "test_rows": n_step,
-                        "oos_accuracy": step_correct / n_step,
-                        "oos_logloss": step_logloss / n_step,
-                    }
-                )
-                logger.info(
-                    "Step %d | train=%d rows | test=%d | OOS acc=%.3f logloss=%.4f",
-                    step_idx,
-                    cutoff - train_start,
-                    n_step,
-                    step_correct / n_step,
-                    step_logloss / n_step,
-                )
+                record: dict = {
+                    "step": step_idx,
+                    "train_end": ts_all[cutoff - 1],
+                    "train_rows": cutoff - train_start,
+                    "test_rows": n_step,
+                }
+                # Threshold-aware + probabilistic metrics (classification) or
+                # directional/RMSE metrics (regression) for a faithful learning curve.
+                if is_classification:
+                    record.update(
+                        classification_step_metrics(
+                            np.asarray(step_preds),
+                            np.asarray(step_labels),
+                            long_threshold=self.config.risk.long_threshold,
+                            short_threshold=self.config.risk.short_threshold,
+                        )
+                    )
+                    logger.info(
+                        "Step %d | train=%d | test=%d | acc=%.3f logloss=%.4f "
+                        "auc=%.3f brier=%.4f dir_acc=%.3f",
+                        step_idx,
+                        cutoff - train_start,
+                        n_step,
+                        record["oos_accuracy"],
+                        record["oos_logloss"],
+                        record["oos_auc"],
+                        record["oos_brier"],
+                        record["oos_directional_accuracy"],
+                    )
+                else:
+                    record.update(
+                        regression_step_metrics(
+                            np.asarray(step_preds), np.asarray(step_returns)
+                        )
+                    )
+                    logger.info(
+                        "Step %d | train=%d | test=%d | dir_acc=%.3f rmse=%.5f",
+                        step_idx,
+                        cutoff - train_start,
+                        n_step,
+                        record["oos_accuracy"],
+                        record["oos_rmse"],
+                    )
+                step_records.append(record)
 
             cutoff = test_end
             step_idx += 1

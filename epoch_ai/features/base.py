@@ -39,10 +39,13 @@ class FeatureGroup(ABC):
 def build_feature_groups(config: FeatureConfig) -> list[FeatureGroup]:
     """Instantiate the feature groups enabled in ``config``.
 
-    Imports are local to avoid importing every group when only a subset is enabled.
+    Indicator look-back windows are threaded through from ``config`` so the feature
+    set is fully config-driven. Imports are local to avoid importing every group when
+    only a subset is enabled.
     """
     from epoch_ai.features.derivatives import DerivativesFeatures
     from epoch_ai.features.microstructure import MicrostructureFeatures
+    from epoch_ai.features.onchain import OnChainFeatures
     from epoch_ai.features.sentiment import SentimentFeatures
     from epoch_ai.features.technical import TechnicalFeatures
     from epoch_ai.features.time_features import TimeFeatures
@@ -50,15 +53,23 @@ def build_feature_groups(config: FeatureConfig) -> list[FeatureGroup]:
 
     groups: list[FeatureGroup] = []
     if config.technical:
-        groups.append(TechnicalFeatures())
+        groups.append(
+            TechnicalFeatures(
+                return_lags=config.return_lags,
+                ma_windows=config.ma_windows,
+                rsi_periods=config.rsi_periods,
+            )
+        )
     if config.microstructure:
         groups.append(MicrostructureFeatures())
     if config.derivatives:
         groups.append(DerivativesFeatures())
     if config.volatility:
-        groups.append(VolatilityFeatures())
+        groups.append(VolatilityFeatures(vol_windows=config.vol_windows))
     if config.time:
         groups.append(TimeFeatures())
     if config.sentiment:
         groups.append(SentimentFeatures())
+    if config.onchain:
+        groups.append(OnChainFeatures())
     return groups

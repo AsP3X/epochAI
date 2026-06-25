@@ -56,9 +56,22 @@ class Backtester:
     def _strategy_returns(
         self, market: pd.DataFrame, predictions: pd.DataFrame
     ) -> tuple[pd.Series, pd.Series]:
-        """Build per-bar strategy and benchmark returns from target weights."""
+        """Build per-bar strategy and benchmark returns from target weights.
+
+        When ``backtest.horizon_aware`` is set (default), each signal is held for the
+        full ``prediction.horizon``: the effective per-bar position is the rolling
+        mean of target weights over the horizon window, i.e. ``horizon`` overlapping
+        positions each holding ``1/horizon`` of capital. This makes the equity curve
+        measure the same horizon the model was trained to predict, and naturally
+        reduces churn/turnover. The rolling mean is causal (current + past weights).
+        """
         close = market["close"]
         weights = predictions["target_weight"].reindex(predictions.index)
+
+        if self.config.backtest.horizon_aware:
+            horizon = max(1, self.config.prediction.horizon)
+            weights = weights.rolling(horizon, min_periods=1).mean()
+
         # Return realised over the bar *following* each decision.
         next_ret = close.pct_change().shift(-1).reindex(predictions.index)
 

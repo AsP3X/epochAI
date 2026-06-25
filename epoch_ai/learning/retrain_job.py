@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.features.pipeline import FeaturePipeline, build_target
+from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.logging_system.joiner import build_training_dataset
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.lightgbm_model import LightGBMModel
@@ -52,6 +53,9 @@ def run_retrain(
     try:
         logged = build_training_dataset(store, config.primary_symbol)
         if len(logged) >= min_new_samples:
+            # Ensure chronological order so recency weighting decays into the past.
+            if "timestamp" in logged.columns:
+                logged = logged.sort_values("timestamp")
             feature_cols = [
                 c for c in logged.columns if c not in {"timestamp", "target", "forward_return"}
             ]
@@ -80,8 +84,11 @@ def run_retrain(
     finally:
         store.close()
 
+    # Emphasise recent regimes consistently with the walk-forward engine; rows are
+    # chronological (parquet history is time-sorted; logs sorted above).
+    weights = recency_weights(len(x), config.walk_forward.recency_half_life)
     model = LightGBMModel(config.model, task=config.prediction.task)
-    model.fit(x, y)
+    model.fit(x, y, sample_weight=weights)
 
     version: str | None = None
     if register:

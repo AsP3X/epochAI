@@ -31,9 +31,14 @@ features:
   derivatives: true
   volatility: true
   time: true
-  sentiment: false
-  onchain: false
+  sentiment: false           # joins a `fear_greed` column when present, else no-op
+  onchain: false             # joins on-chain columns (e.g. exchange_netflow) when present
   dropna: true
+  # Indicator look-back windows (config-driven; previously hard-coded in code).
+  return_lags: [1, 3, 6, 12, 24, 48]
+  ma_windows: [10, 20, 50, 100, 200]
+  rsi_periods: [7, 14, 28]
+  vol_windows: [12, 24, 48, 96]
 
 # -----------------------------------------------------------------------------
 # Prediction target: direction over a 12-candle (4h) horizon.
@@ -50,6 +55,9 @@ model:
   model_dir: "artifacts/models"
   num_boost_round: 300
   early_stopping_rounds: 30
+  val_fraction: 0.15          # time-ordered tail for early stopping + calibration
+  class_weight: balanced      # derive scale_pos_weight from label balance ("none" to disable)
+  calibration: isotonic       # post-hoc probability calibration: isotonic | sigmoid | none
   params:
     learning_rate: 0.03
     num_leaves: 63
@@ -58,8 +66,9 @@ model:
     feature_fraction: 0.8
     bagging_fraction: 0.8
     bagging_freq: 1
-    lambda_l1: 0.0
-    lambda_l2: 0.0
+    lambda_l1: 0.1            # mild L1 regularisation (was 0.0)
+    lambda_l2: 1.0            # mild L2 regularisation (was 0.0)
+    min_gain_to_split: 0.0
     verbosity: -1
 
 # -----------------------------------------------------------------------------
@@ -72,7 +81,7 @@ walk_forward:
   step_size: 200               # candles predicted + ingested per iteration
   retrain_frequency: 1         # retrain every N steps (1 = every step)
   expanding: true              # expanding window = full accumulated history
-  recency_half_life: null      # set to e.g. 5000 to emphasise recent regimes
+  recency_half_life: 4000      # decay sample weights so recent regimes matter more
   max_steps: null              # cap iterations for quick demos (null = full run)
 
 # -----------------------------------------------------------------------------
@@ -124,6 +133,7 @@ telegram:
 backtest:
   use_vectorbt: false          # set true if vectorbt is installed
   annualization_factor: null   # auto-derived from timeframe when null
+  horizon_aware: true          # hold each signal for prediction.horizon bars (matches target)
 
 logging:
   db_path: "artifacts/logs/predictions.sqlite"

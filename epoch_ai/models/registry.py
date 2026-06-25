@@ -121,7 +121,8 @@ class ModelRegistry:
         out = Path(dest) / resolved
         out.mkdir(parents=True, exist_ok=True)
 
-        for name in ("model.txt", "metadata.json"):
+        # Include the calibration sidecar so the exported bundle predicts identically.
+        for name in ("model.txt", "model.txt.calibration.json", "metadata.json"):
             src_file = src / name
             if src_file.exists():
                 shutil.copy2(src_file, out / name)

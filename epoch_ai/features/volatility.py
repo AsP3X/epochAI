@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 import pandas as pd
 
@@ -13,12 +15,15 @@ class VolatilityFeatures(FeatureGroup):
 
     name = "vol"
 
+    def __init__(self, vol_windows: Sequence[int] = (12, 24, 48, 96)) -> None:
+        self.vol_windows = tuple(vol_windows)
+
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         out = pd.DataFrame(index=df.index)
         ret = df["close"].pct_change()
 
-        for w in (12, 24, 48, 96):
-            out[f"vol_std_{w}"] = ret.rolling(w, min_periods=w // 2).std()
+        for w in self.vol_windows:
+            out[f"vol_std_{w}"] = ret.rolling(w, min_periods=max(2, w // 2)).std()
 
         # Vol-of-vol and short/long vol ratio (regime expansion/contraction).
         vol_short = ret.rolling(24, min_periods=12).std()

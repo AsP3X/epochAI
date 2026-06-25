@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import lightgbm as lgb
@@ -10,9 +11,13 @@ import pandas as pd
 
 from epoch_ai.config.settings import ModelConfig
 from epoch_ai.models.base import BaseModel
+from epoch_ai.models.calibration import ProbabilityCalibrator
 from epoch_ai.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+#: Suffix of the JSON sidecar storing the (optional) probability calibrator.
+CALIBRATION_SUFFIX = ".calibration.json"
 
 
 class LightGBMModel(BaseModel):
@@ -20,7 +25,8 @@ class LightGBMModel(BaseModel):
 
     Supports both binary classification (predicting P(up)) and regression
     (predicting forward return), optional time-ordered early stopping, per-sample
-    weighting (for recency emphasis) and feature-importance extraction.
+    weighting (for recency emphasis), balanced class weighting, post-hoc probability
+    calibration and feature-importance extraction.
     """
 
     def __init__(self, config: ModelConfig, task: str = "classification") -> None:
@@ -29,6 +35,8 @@ class LightGBMModel(BaseModel):
         self.booster: lgb.Booster | None = None
         self.feature_names_: list[str] | None = None
         self.best_iteration_: int | None = None
+        #: Fitted probability calibrator (classification only); ``None`` = raw output.
+        self.calibrator_: ProbabilityCalibrator | None = None
 
     # -------------------------------------------------------------------- train
     def fit(
@@ -36,16 +44,20 @@ class LightGBMModel(BaseModel):
         x: pd.DataFrame,
         y: pd.Series,
         sample_weight: np.ndarray | None = None,
-        val_fraction: float = 0.15,
+        val_fraction: float | None = None,
     ) -> LightGBMModel:
-        """Fit the booster, using a time-ordered validation tail for early stopping.
+        """Fit the booster on a time-ordered split, then optionally calibrate.
+
+        The most-recent ``val_fraction`` of rows is held out (chronologically) and
+        reused for both early stopping and probability calibration, so neither peeks
+        at future bars relative to the training rows.
 
         Args:
             x: Feature matrix (rows in chronological order).
             y: Target aligned to ``x``.
             sample_weight: Optional per-row weights (e.g. recency decay).
-            val_fraction: Fraction of the *most recent* rows held out for early
-                stopping. Set to 0 to disable early stopping.
+            val_fraction: Fraction of the *most recent* rows held out. ``None`` uses
+                ``config.val_fraction``; ``0`` disables early stopping + calibration.
 
         Returns:
             ``self`` (fitted).
@@ -53,21 +65,32 @@ class LightGBMModel(BaseModel):
         if len(x) != len(y):
             raise ValueError("x and y must have the same length.")
         self.feature_names_ = list(x.columns)
+        self.calibrator_ = None
 
+        is_classification = self.task == "classification"
         params = dict(self.config.params)
-        params["objective"] = "binary" if self.task == "classification" else "regression"
-        params["metric"] = "binary_logloss" if self.task == "classification" else "l2"
+        params["objective"] = "binary" if is_classification else "regression"
+        params["metric"] = "binary_logloss" if is_classification else "l2"
 
-        use_es = (
-            self.config.early_stopping_rounds is not None
-            and 0.0 < val_fraction < 0.5
-            and len(x) >= 200
-        )
+        # Balanced class weighting: scale the positive ("up") class so a skewed
+        # up/down label balance does not bias the booster toward the majority class.
+        if is_classification and self.config.class_weight == "balanced":
+            params["scale_pos_weight"] = _scale_pos_weight(y)
+
+        if val_fraction is None:
+            val_fraction = self.config.val_fraction
+
+        # A validation tail is worthwhile only with enough rows to be meaningful.
+        has_val_tail = 0.0 < val_fraction < 0.5 and len(x) >= 200
+        use_es = self.config.early_stopping_rounds is not None and has_val_tail
         callbacks = [lgb.log_evaluation(period=0)]
         valid_sets = None
+        split = len(x)
+
+        if has_val_tail:
+            split = int(len(x) * (1.0 - val_fraction))
 
         if use_es:
-            split = int(len(x) * (1.0 - val_fraction))
             train_set = lgb.Dataset(
                 x.iloc[:split],
                 label=y.iloc[:split],
@@ -94,32 +117,55 @@ class LightGBMModel(BaseModel):
             callbacks=callbacks,
         )
         self.best_iteration_ = self.booster.best_iteration or self.config.num_boost_round
+
+        # Fit probability calibration on the held-out validation tail (classification
+        # only). Without a tail we cannot calibrate honestly, so we keep raw output.
+        if is_classification and self.config.calibration != "none" and has_val_tail:
+            raw_val = self.booster.predict(x.iloc[split:], num_iteration=self.best_iteration_)
+            self.calibrator_ = ProbabilityCalibrator.fit(
+                np.asarray(raw_val), y.iloc[split:].to_numpy(), self.config.calibration
+            )
         return self
 
     # ------------------------------------------------------------------ predict
     def predict(self, x: pd.DataFrame) -> np.ndarray:
-        """Predict P(up) (classification) or forward return (regression)."""
+        """Predict calibrated P(up) (classification) or forward return (regression)."""
         if self.booster is None:
             raise RuntimeError("Model is not trained. Call fit() first.")
         if self.feature_names_ is not None:
             x = x[self.feature_names_]
-        return self.booster.predict(x, num_iteration=self.best_iteration_)
+        raw = self.booster.predict(x, num_iteration=self.best_iteration_)
+        if self.calibrator_ is not None:
+            return self.calibrator_.transform(raw)
+        return raw
 
     # --------------------------------------------------------------- persistence
     def save(self, path: str) -> None:
-        """Persist the booster (and feature order) to ``path``."""
+        """Persist the booster, plus a calibration sidecar when one was fitted."""
         if self.booster is None:
             raise RuntimeError("Cannot save an untrained model.")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.booster.save_model(path)
+        # Calibrator (if any) lives next to the booster so the registry/export can
+        # carry it alongside the open-weights model file.
+        sidecar = Path(path).with_name(Path(path).name + CALIBRATION_SUFFIX)
+        if self.calibrator_ is not None:
+            sidecar.write_text(json.dumps(self.calibrator_.to_dict(), indent=2), encoding="utf-8")
+        elif sidecar.exists():
+            sidecar.unlink()
 
     @classmethod
     def load(cls, path: str, config: ModelConfig, task: str = "classification") -> LightGBMModel:
-        """Load a booster previously saved with :meth:`save`."""
+        """Load a booster (and its calibration sidecar, if present)."""
         model = cls(config, task=task)
         model.booster = lgb.Booster(model_file=path)
         model.feature_names_ = model.booster.feature_name()
         model.best_iteration_ = model.booster.best_iteration or None
+        sidecar = Path(path).with_name(Path(path).name + CALIBRATION_SUFFIX)
+        if sidecar.exists():
+            model.calibrator_ = ProbabilityCalibrator.from_dict(
+                json.loads(sidecar.read_text(encoding="utf-8"))
+            )
         return model
 
     # ----------------------------------------------------------------- insights
@@ -130,3 +176,17 @@ class LightGBMModel(BaseModel):
         importance = self.booster.feature_importance(importance_type="gain")
         names = self.booster.feature_name()
         return pd.Series(importance, index=names, name="gain").sort_values(ascending=False)
+
+
+def _scale_pos_weight(y: pd.Series) -> float:
+    """Return ``n_negative / n_positive`` for balanced binary class weighting.
+
+    Falls back to ``1.0`` (no reweighting) when a class is absent, so a degenerate
+    single-class training window never produces an infinite or zero weight.
+    """
+    labels = y.to_numpy()
+    n_pos = float((labels > 0.5).sum())
+    n_neg = float((labels <= 0.5).sum())
+    if n_pos <= 0.0 or n_neg <= 0.0:
+        return 1.0
+    return n_neg / n_pos

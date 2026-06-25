@@ -42,10 +42,11 @@ class DataConfig(BaseModel):
 
 
 class FeatureConfig(BaseModel):
-    """Toggles for the modular feature groups.
+    """Toggles and window parameters for the modular feature groups.
 
     Each flag enables/disables a registered feature group. Disabling unused groups
-    keeps the feature matrix small and training fast.
+    keeps the feature matrix small and training fast. The window lists make the
+    indicator look-backs config-driven instead of hard-coded inside each group.
     """
 
     technical: bool = True
@@ -56,6 +57,34 @@ class FeatureConfig(BaseModel):
     sentiment: bool = False
     onchain: bool = False
     dropna: bool = True
+
+    # Indicator look-back windows (config-driven; consumed by the feature groups).
+    return_lags: list[int] = Field(
+        default_factory=lambda: [1, 3, 6, 12, 24, 48],
+        description="Look-back lags (in candles) for momentum/return features.",
+    )
+    ma_windows: list[int] = Field(
+        default_factory=lambda: [10, 20, 50, 100, 200],
+        description="Moving-average windows for SMA/EMA distance features.",
+    )
+    rsi_periods: list[int] = Field(
+        default_factory=lambda: [7, 14, 28],
+        description="RSI look-back periods.",
+    )
+    vol_windows: list[int] = Field(
+        default_factory=lambda: [12, 24, 48, 96],
+        description="Rolling realised-volatility windows.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_windows(self) -> FeatureConfig:
+        # Window lists must be non-empty positive integers so feature groups emit
+        # a stable set of columns; an empty list would silently drop a sub-family.
+        for name in ("return_lags", "ma_windows", "rsi_periods", "vol_windows"):
+            values = getattr(self, name)
+            if not values or any(int(v) < 1 for v in values):
+                raise ValueError(f"features.{name} must be a non-empty list of positive ints.")
+        return self
 
 
 class PredictionConfig(BaseModel):
@@ -74,11 +103,30 @@ class PredictionConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
-    """LightGBM hyper-parameters and model-registry location."""
+    """LightGBM hyper-parameters, calibration and model-registry location.
+
+    Attributes:
+        val_fraction: Fraction of the most-recent training rows held out (time-ordered)
+            for early stopping and probability calibration. ``0`` disables both.
+        class_weight: ``"balanced"`` derives ``scale_pos_weight`` from the training
+            label balance (helps when "up" vs "down" labels are skewed); ``"none"``
+            leaves LightGBM unweighted.
+        calibration: Post-hoc probability calibration fit on the validation tail —
+            ``"isotonic"`` (non-parametric, monotone), ``"sigmoid"`` (Platt scaling)
+            or ``"none"``. Only applies to classification.
+    """
 
     model_dir: str = "artifacts/models"
     num_boost_round: int = 300
     early_stopping_rounds: int | None = 30
+    val_fraction: float = Field(
+        default=0.15,
+        ge=0.0,
+        lt=0.5,
+        description="Time-ordered validation-tail fraction for early stopping + calibration.",
+    )
+    class_weight: Literal["none", "balanced"] = "balanced"
+    calibration: Literal["none", "isotonic", "sigmoid"] = "isotonic"
     params: dict[str, Any] = Field(
         default_factory=lambda: {
             "learning_rate": 0.03,
@@ -88,8 +136,11 @@ class ModelConfig(BaseModel):
             "feature_fraction": 0.8,
             "bagging_fraction": 0.8,
             "bagging_freq": 1,
-            "lambda_l1": 0.0,
-            "lambda_l2": 0.0,
+            # Mild L1/L2 regularisation by default to curb overfitting on noisy
+            # crypto features (previously 0.0 = unregularised).
+            "lambda_l1": 0.1,
+            "lambda_l2": 1.0,
+            "min_gain_to_split": 0.0,
             "verbosity": -1,
         }
     )
@@ -196,10 +247,18 @@ class TelegramConfig(BaseModel):
 
 
 class BacktestConfig(BaseModel):
-    """Backtester settings."""
+    """Backtester settings.
+
+    Attributes:
+        horizon_aware: When ``True`` the equity simulation holds each signal for the
+            full ``prediction.horizon`` (overlapping positions are averaged), so the
+            backtest measures the same horizon the model was trained to predict.
+            When ``False`` it uses the legacy single-bar-ahead return.
+    """
 
     use_vectorbt: bool = False
     annualization_factor: int | None = None
+    horizon_aware: bool = True
 
 
 class LoggingConfig(BaseModel):

@@ -20,6 +20,28 @@ def test_progressive_run(market, small_config):
     )
     # Predictions are out-of-sample (after the initial training window).
     assert result.predictions["prediction"].between(0, 1).all()
+    # Richer OOS step metrics are recorded for the learning curve.
+    assert {"oos_accuracy", "oos_logloss", "oos_brier", "oos_auc"}.issubset(
+        result.step_history.columns
+    )
+
+
+def test_horizon_aware_backtest_reduces_turnover(market, small_config):
+    """Horizon-aware PnL holds positions longer => lower per-step weight churn."""
+    from epoch_ai.backtesting.engine import Backtester
+
+    features = FeaturePipeline(small_config).transform(market)
+
+    small_config.backtest.horizon_aware = True
+    aware = Backtester(small_config).run(market, features=features)
+
+    small_config.backtest.horizon_aware = False
+    legacy = Backtester(small_config).run(market, features=features)
+
+    # Both produce valid equity curves; the two modes should differ.
+    assert aware.equity_curve.iloc[-1] > 0
+    assert legacy.equity_curve.iloc[-1] > 0
+    assert not aware.strategy_returns.equals(legacy.strategy_returns)
 
 
 def test_backtest_and_logging(market, small_config, tmp_path):

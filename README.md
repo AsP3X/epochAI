@@ -19,10 +19,18 @@ operating closer to real-time.
 ## Highlights
 
 - **Progressive historical learning engine** — expanding/rolling walk-forward with
-  configurable retraining frequency and optional recency weighting.
-- **Rich, multi-source features** — technical, microstructure, derivatives
-  (funding / open interest / liquidations), volatility/regime, and cyclical time
-  features, all modular and toggle-able.
+  configurable retraining frequency and recency weighting (enabled by default).
+- **Calibrated, class-balanced model** — LightGBM with balanced class weighting,
+  post-hoc probability calibration (isotonic/Platt) fit on a held-out validation
+  tail, and mild L1/L2 regularisation, so `P(up)` is trustworthy for thresholding.
+- **Honest, horizon-aware evaluation** — per-step OOS metrics include logloss,
+  Brier, ROC-AUC and execution-threshold-aware accuracy; the backtest holds each
+  signal for the full prediction horizon (`backtest.horizon_aware`).
+- **Rich, multi-source features** — technical (incl. ADX, VWAP, OBV, CCI,
+  Williams %R), microstructure, derivatives (funding / open interest /
+  liquidations), volatility/regime, cyclical time, plus optional sentiment
+  (Fear & Greed) and on-chain (exchange net-flow) groups — all modular,
+  toggle-able, with config-driven look-back windows.
 - **Open weights by default** — versioned models export as plain LightGBM files +
   JSON metadata (`ModelRegistry.export_open_bundle`); no encryption or load gates.
 - **Prediction + outcome logging** to SQLite (full feature vectors at prediction
@@ -190,12 +198,39 @@ walk_forward:
   step_size: 200               # candles predicted + ingested per iteration
   retrain_frequency: 1         # retrain every N steps
   expanding: true              # expanding window = full accumulated history
-  recency_half_life: null      # e.g. 5000 to emphasise recent regimes
+  recency_half_life: 4000      # decay sample weights toward recent regimes (null = off)
   max_steps: null              # cap iterations for quick demos
 ```
 
 The same engine powers both the **backtest simulation** and a **live retraining job**:
 predict → collect outcomes + context → append samples → retrain → advance.
+
+### Model, calibration and evaluation knobs
+
+```yaml
+model:
+  val_fraction: 0.15           # time-ordered tail for early stopping + calibration
+  class_weight: balanced       # derive scale_pos_weight from label balance (or "none")
+  calibration: isotonic        # post-hoc P(up) calibration: isotonic | sigmoid | none
+  params:
+    lambda_l1: 0.1             # mild regularisation (was 0.0)
+    lambda_l2: 1.0
+
+features:                      # look-back windows are config-driven
+  return_lags: [1, 3, 6, 12, 24, 48]
+  ma_windows: [10, 20, 50, 100, 200]
+  rsi_periods: [7, 14, 28]
+  vol_windows: [12, 24, 48, 96]
+  sentiment: false             # joins a `fear_greed` column when present
+  onchain: false               # joins on-chain columns (e.g. `exchange_netflow`)
+
+backtest:
+  horizon_aware: true          # hold each signal for prediction.horizon bars
+```
+
+Per-step out-of-sample metrics (`step_history.csv`) now include `oos_logloss`,
+`oos_brier`, `oos_auc`, `oos_directional_accuracy` and `oos_coverage` so the learning
+curve reflects the decision the system actually trades.
 
 ## Development
 

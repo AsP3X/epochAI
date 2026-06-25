@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from epoch_ai.features.pipeline import FeaturePipeline, build_target
+from epoch_ai.models.calibration import ProbabilityCalibrator
 from epoch_ai.models.lightgbm_model import LightGBMModel
 
 
@@ -37,3 +38,58 @@ def test_feature_importance(market, small_config):
     importance = model.feature_importance()
     assert len(importance) == x.shape[1]
     assert (importance >= 0).all()
+
+
+def test_calibration_fitted_and_persisted(market, small_config, tmp_path):
+    """Early stopping + calibration enabled => calibrator survives save/load."""
+    small_config.model.early_stopping_rounds = 20
+    small_config.model.val_fraction = 0.2
+    small_config.model.calibration = "isotonic"
+    x, y = _xy(market, small_config)
+
+    model = LightGBMModel(small_config.model, task="classification")
+    model.fit(x.iloc[:2000], y.iloc[:2000])
+    assert model.calibrator_ is not None
+
+    preds = model.predict(x.iloc[2000:2100])
+    assert ((preds >= 0) & (preds <= 1)).all()
+
+    path = tmp_path / "model.txt"
+    model.save(str(path))
+    assert path.with_name(path.name + ".calibration.json").exists()
+
+    loaded = LightGBMModel.load(str(path), small_config.model)
+    assert loaded.calibrator_ is not None
+    assert np.allclose(preds, loaded.predict(x.iloc[2000:2100]), atol=1e-9)
+
+
+def test_balanced_class_weight_runs(market, small_config):
+    """Balanced class weighting should train and still emit valid probabilities."""
+    small_config.model.class_weight = "balanced"
+    x, y = _xy(market, small_config)
+    model = LightGBMModel(small_config.model, task="classification")
+    model.fit(x.iloc[:1500], y.iloc[:1500])
+    preds = model.predict(x.iloc[1500:1600])
+    assert ((preds >= 0) & (preds <= 1)).all()
+
+
+def test_probability_calibrator_monotone_and_serializable():
+    rng = np.random.default_rng(0)
+    raw = rng.uniform(0, 1, size=500)
+    # Labels correlated with raw so calibration is well-defined.
+    labels = (raw + 0.2 * rng.standard_normal(500) > 0.5).astype(int)
+    calib = ProbabilityCalibrator.fit(raw, labels, "isotonic")
+    assert calib is not None
+
+    restored = ProbabilityCalibrator.from_dict(calib.to_dict())
+    grid = np.linspace(0, 1, 50)
+    out = restored.transform(grid)
+    assert ((out >= 0) & (out <= 1)).all()
+    # Isotonic calibration is monotone non-decreasing.
+    assert np.all(np.diff(out) >= -1e-9)
+
+
+def test_calibrator_none_when_single_class():
+    raw = np.linspace(0, 1, 100)
+    labels = np.ones(100, dtype=int)
+    assert ProbabilityCalibrator.fit(raw, labels, "isotonic") is None

@@ -66,10 +66,15 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
 
 - `epoch_ai/config` — Pydantic config + YAML loader (everything is config-driven).
 - `epoch_ai/data` — CCXT downloader with an **offline synthetic fallback** + cleaning.
-- `epoch_ai/features` — modular, causal feature groups + pipeline + target builder.
-- `epoch_ai/models` — LightGBM wrapper + file-based versioned registry.
+- `epoch_ai/features` — modular, causal feature groups (incl. ADX/VWAP/OBV/CCI,
+  optional sentiment + on-chain) with config-driven look-back windows.
+- `epoch_ai/models` — LightGBM wrapper (balanced class weighting + post-hoc
+  probability calibration in `calibration.py`) + file-based versioned registry.
+  The calibration sidecar (`model.txt.calibration.json`) travels with the bundle.
 - `epoch_ai/logging_system` — SQLite prediction/outcome store + dataset joiner.
-- `epoch_ai/learning` — the progressive walk-forward engine (core component).
+- `epoch_ai/learning` — the progressive walk-forward engine (core component);
+  `step_metrics.py` (OOS logloss/Brier/AUC/threshold-aware) + `weighting.py`
+  (shared recency decay used by the engine and the retrain job).
 - `epoch_ai/backtesting` — backtester + native trading metrics.
 - `epoch_ai/execution` — risk manager + paper trader (separate from prediction).
 - `epoch_ai/services` — **TrainingService** (train mode) and **RuntimeService** (run mode); entry point for future Telegram/website.

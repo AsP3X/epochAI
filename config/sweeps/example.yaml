@@ -1,4 +1,6 @@
 # Example hyperparameter sweep for `python -m epoch_ai tune --sweep config/sweeps/example.yaml`
+# Each experiment overrides the base config with dotted keys; results are ranked by
+# backtest Sharpe (see `python -m epoch_ai promote`).
 experiments:
   - name: baseline
     overrides: {}
@@ -10,3 +12,24 @@ experiments:
   - name: recency_weighted
     overrides:
       walk_forward.recency_half_life: 2000
+
+  # --- Model hyperparameters (previously not swept) ---------------------------
+  - name: stronger_regularization
+    overrides:
+      model.params.lambda_l1: 0.5
+      model.params.lambda_l2: 5.0
+
+  - name: shallower_trees
+    overrides:
+      model.params.num_leaves: 31
+      model.params.learning_rate: 0.05
+
+  # --- Calibration / class-weight ablations -----------------------------------
+  - name: sigmoid_calibration
+    overrides:
+      model.calibration: sigmoid
+
+  - name: no_calibration_no_classweight
+    overrides:
+      model.calibration: none
+      model.class_weight: none
