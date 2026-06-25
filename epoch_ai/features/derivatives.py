@@ -26,9 +26,15 @@ class DerivativesFeatures(FeatureGroup):
             out["deriv_funding"] = funding
             out["deriv_funding_ma"] = funding.rolling(48, min_periods=8).mean()
             out["deriv_funding_chg"] = funding.diff()
-            out["deriv_funding_z"] = (
-                funding - funding.rolling(96, min_periods=16).mean()
-            ) / funding.rolling(96, min_periods=16).std().replace(0.0, np.nan)
+            # Causal rolling z-score. When funding is *constant* over the window the
+            # rolling std is 0 (deviation undefined); treat that as a neutral 0 rather
+            # than NaN so a flat funding series does not blank out the whole feature
+            # matrix via the pipeline's dropna. Genuine warm-up rows (std == NaN under
+            # min_periods) remain NaN and are trimmed as normal warm-up.
+            funding_mean = funding.rolling(96, min_periods=16).mean()
+            funding_std = funding.rolling(96, min_periods=16).std()
+            z = (funding - funding_mean) / funding_std.where(funding_std > 0)
+            out["deriv_funding_z"] = z.mask(funding_std.eq(0.0), 0.0)
 
         if "open_interest" in df.columns:
             oi = df["open_interest"]

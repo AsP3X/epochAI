@@ -76,6 +76,12 @@ class RuntimeService:
         # Human: Live ticks call this every bar; skip noisy pipeline INFO each time.
         # Agent: log_stats=False; RETURNS feature dict for SQLite logging without re-transform.
         features = self.pipeline.transform(market, log_stats=False)
+        if features.empty:
+            raise ValueError(
+                f"Feature pipeline produced no rows for the {len(market)}-bar window "
+                "(all rows dropped as feature warm-up/NaN). Provide a longer warmup "
+                "window or data with the required context columns (e.g. funding_rate)."
+            )
         model = self._require_model()
         ts = market.index[-1]
         row = features.iloc[[-1]]

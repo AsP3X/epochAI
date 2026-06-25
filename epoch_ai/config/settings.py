@@ -22,8 +22,10 @@ class DataConfig(BaseModel):
     Attributes:
         exchange: CCXT exchange id (e.g. ``"binanceusdm"`` for USDT-M futures).
         market_type: ``"spot"`` or ``"future"`` (derivatives carry funding/OI data).
-        historical_start_date: ISO date for the *oldest* candle to fetch. The
-            downloader walks forward from here to maximise historical depth.
+        historical_start_date: ISO date for the *oldest* candle to fetch, or one of
+            the sentinels ``"earliest"``/``"auto"`` to fetch from the very first
+            candle the exchange offers (true full history). The downloader walks
+            forward from here to maximise historical depth.
         data_dir: Directory where raw/aligned parquet datasets are stored.
         use_synthetic_fallback: When ``True`` (default) the downloader generates a
             realistic synthetic dataset if the exchange is unreachable, guaranteeing
@@ -39,6 +41,21 @@ class DataConfig(BaseModel):
     use_synthetic_fallback: bool = True
     synthetic_seed: int = 7
     rate_limit_ms: int = 250
+
+    # Sentinel values that mean "start from the exchange's first available candle".
+    _EARLIEST_SENTINELS = {"earliest", "auto", "all", "max", ""}
+    # Concrete fallback used for synthetic generation / bar-count math in earliest mode.
+    _EARLIEST_FALLBACK_DATE = "2017-01-01"
+
+    def fetch_from_earliest(self) -> bool:
+        """Whether the oldest-candle start date should be auto-detected."""
+        return self.historical_start_date.strip().lower() in self._EARLIEST_SENTINELS
+
+    def start_date_iso(self) -> str:
+        """Resolve a concrete ISO start date (used for synthetic/bar-count math)."""
+        if self.fetch_from_earliest():
+            return self._EARLIEST_FALLBACK_DATE
+        return self.historical_start_date
 
 
 class FeatureConfig(BaseModel):

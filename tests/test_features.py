@@ -21,6 +21,18 @@ def test_feature_groups_present(market, small_config):
         assert expected in prefixes
 
 
+def test_constant_funding_does_not_blank_feature_matrix(market, small_config):
+    # Real exchange data can carry a flat funding rate; a constant series makes the
+    # rolling std 0. The funding z-score must degrade to a neutral 0 (not NaN) so the
+    # pipeline's dropna does not delete every row.
+    flat = market.copy()
+    flat["funding_rate"] = 0.0001
+    features = FeaturePipeline(small_config).transform(flat)
+    assert len(features) > 0
+    assert "deriv_funding_z" in features.columns
+    assert (features["deriv_funding_z"] == 0.0).all()
+
+
 def test_target_is_binary_and_causal(market, small_config):
     target = build_target(market, small_config.prediction)
     valid = target.dropna()

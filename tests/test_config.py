@@ -22,6 +22,19 @@ def test_load_from_yaml(tmp_path):
     assert config.timeframe == "5m"
 
 
+def test_historical_start_date_concrete():
+    data = AppConfig.model_validate({"data": {"historical_start_date": "2019-11-01"}}).data
+    assert data.fetch_from_earliest() is False
+    assert data.start_date_iso() == "2019-11-01"
+
+
+def test_historical_start_date_earliest_sentinels():
+    for sentinel in ("earliest", "AUTO", "all", "Max", ""):
+        data = AppConfig.model_validate({"data": {"historical_start_date": sentinel}}).data
+        assert data.fetch_from_earliest() is True
+        assert data.start_date_iso() == "2017-01-01"
+
+
 def test_invalid_horizon_rejected():
     with pytest.raises(ValueError):
         AppConfig.model_validate({"prediction": {"horizon": 0}})

@@ -10,13 +10,16 @@ timeframe: "15m"
 
 # -----------------------------------------------------------------------------
 # Data: maximise historical depth. BTC/USDT perp on Binance USDT-M starts ~2019-11.
+# Set historical_start_date to "earliest" to auto-fetch from the exchange's very
+# first available candle (true full history). For pre-2019 BTC history, switch
+# exchange to "binance" + market_type "spot" (BTC/USDT spot lists from 2017-08).
 # If the exchange is unreachable (e.g. geo-blocked), a realistic synthetic dataset
 # is generated so the full pipeline runs offline.
 # -----------------------------------------------------------------------------
 data:
   exchange: "binanceusdm"
   market_type: "future"
-  historical_start_date: "2019-11-01"
+  historical_start_date: "earliest"   # ISO date (e.g. "2019-11-01") or "earliest"
   data_dir: "artifacts/data"
   use_synthetic_fallback: false
   synthetic_seed: 7
