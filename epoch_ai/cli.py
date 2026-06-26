@@ -36,6 +36,7 @@ from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.execution.live_loop import run_bar_loop, run_scheduled_retrain
 from epoch_ai.features.pipeline import FeaturePipeline
+from epoch_ai.logging_system.joiner import RetrainLogStats, retrain_log_stats
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.services.runtime import RuntimeService
 from epoch_ai.services.training import TrainingService
@@ -43,6 +44,42 @@ from epoch_ai.tracking.mlflow_tracker import MLflowTracker
 from epoch_ai.utils.logging import get_logger, setup_logging
 
 logger = get_logger(__name__)
+
+
+def _load_retrain_log_stats(config: AppConfig) -> RetrainLogStats:
+    """Read joined-sample counts from the SQLite prediction store."""
+    store = PredictionStore(config.logging.db_path)
+    try:
+        return retrain_log_stats(store, config.primary_symbol)
+    finally:
+        store.close()
+
+
+def _print_retrain_log_summary(
+    config: AppConfig,
+    stats: RetrainLogStats,
+    *,
+    before: RetrainLogStats | None = None,
+) -> None:
+    """Show how many rows are eligible for ``retrain --min-new-samples``."""
+    print("\n--- Retrain dataset (SQLite) ---")
+    if before is not None and stats.joined_samples > before.joined_samples:
+        added = stats.joined_samples - before.joined_samples
+        print(f"  This session       : +{added:,} joined sample(s)")
+    print(f"  Joined samples     : {stats.joined_samples:,}  (max --min-new-samples)")
+    print(f"  Predictions logged : {stats.predictions:,}")
+    print(f"  Pending outcomes   : {stats.pending:,}  (horizon not elapsed yet)")
+    if stats.joined_samples > 0:
+        print(
+            f"  Retrain example    : python -m epoch_ai retrain "
+            f"--min-new-samples {stats.joined_samples}"
+        )
+    else:
+        print(
+            "  Retrain example    : python -m epoch_ai retrain --min-new-samples 50 "
+            "(falls back to parquet until enough joined samples exist)"
+        )
+    print(f"  Store path         : {config.logging.db_path}")
 
 
 def _load(args: argparse.Namespace) -> AppConfig:
@@ -85,6 +122,8 @@ def cmd_train(args: argparse.Namespace) -> int:
         print("Top features:")
         for name, gain in result.feature_importance.head(5).items():
             print(f"  {name:<28}{gain:>10.1f}")
+    if args.log_predictions:
+        _print_retrain_log_summary(config, _load_retrain_log_stats(config))
     return 0
 
 
@@ -107,6 +146,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if status.models_available == 0:
         logger.error("No trained models in registry. Run `python -m epoch_ai train` first.")
         return 1
+
+    stats_before = _load_retrain_log_stats(config) if args.log_predictions else None
 
     if args.live_stream:
         import asyncio
@@ -143,6 +184,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         if result.treasury.last_reserved > 0:
             print(f"Set aside (wins)  : {result.treasury.last_reserved:,.2f}")
             print(f"Reinvested        : {result.treasury.last_reinvested:,.2f}")
+        stats_after = _load_retrain_log_stats(config)
+        if args.log_predictions or stats_after.joined_samples > 0:
+            _print_retrain_log_summary(config, stats_after, before=stats_before)
         return 0
 
     session = runtime.run_session(
@@ -151,12 +195,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         live_bars=args.live_bars,
         retrain_every=args.retrain_every,
         model_version=args.model_version,
+        log_predictions=args.log_predictions,
     )
     print("\n=== Runtime session complete ===")
     print(f"Model version     : {runtime.status().model_version}")
     print(f"Bars processed    : {session.bars_processed}")
     print(f"Trades (fills)    : {session.fills}")
     print(f"Final equity      : {session.final_equity:,.2f}")
+    stats_after = _load_retrain_log_stats(config)
+    if args.log_predictions or stats_after.joined_samples > 0:
+        _print_retrain_log_summary(config, stats_after, before=stats_before)
     return 0
 
 
@@ -325,7 +373,16 @@ def cmd_live(args: argparse.Namespace) -> int:
 def cmd_retrain(args: argparse.Namespace) -> int:
     """Retrain from SQLite logs or cached historical data."""
     config = _load(args)
-    return run_scheduled_retrain(config, min_new_samples=args.min_new_samples)
+    stats = _load_retrain_log_stats(config)
+    _print_retrain_log_summary(config, stats)
+    if stats.joined_samples < args.min_new_samples:
+        print(
+            f"\nNote: {stats.joined_samples:,} joined sample(s) < "
+            f"--min-new-samples {args.min_new_samples}; "
+            "retrain will use cached parquet history instead."
+        )
+    code = run_scheduled_retrain(config, min_new_samples=args.min_new_samples)
+    return code
 
 
 def _print_auto_retrain(result) -> None:
@@ -663,7 +720,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--log-predictions",
         action="store_true",
-        help="Persist live predictions/outcomes to SQLite for retraining.",
+        help="Persist predictions/outcomes to SQLite for retrain (all run modes).",
     )
     p_run.add_argument(
         "--reserve-fraction",

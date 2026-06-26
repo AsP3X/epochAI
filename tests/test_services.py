@@ -6,6 +6,9 @@ import json
 
 import pytest
 
+from epoch_ai.data.downloader import HistoricalDownloader
+from epoch_ai.logging_system.joiner import retrain_log_stats
+from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.services.runtime import RuntimeService
 from epoch_ai.services.training import TrainingService
@@ -35,6 +38,36 @@ def test_runtime_service_predict_and_run(market, small_config, tmp_path):
 
     result = runtime.run_session(n_bars=2000, live_bars=200, retrain_every=0)
     assert result.bars_processed > 0
+
+
+def test_runtime_session_log_predictions(market, small_config, tmp_path, monkeypatch):
+    small_config.model.model_dir = str(tmp_path / "models")
+    small_config.data.data_dir = str(tmp_path / "data")
+    small_config.data.use_synthetic_fallback = True
+    small_config.data.context_symbols = []
+    small_config.data.fetch_fear_greed = False
+    small_config.features.cross_asset = False
+    small_config.features.sentiment = False
+    small_config.logging.db_path = str(tmp_path / "logs" / "predictions.sqlite")
+
+    def fake_load(self, symbol=None, *, n_bars=None, force=False, skip_enrichment=False):
+        cap = len(market) if n_bars is None else min(n_bars, len(market))
+        return market.iloc[:cap].copy()
+
+    monkeypatch.setattr(HistoricalDownloader, "load_or_download", fake_load)
+
+    TrainingService(small_config).train(n_bars=2000, max_steps=2, register=True)
+    runtime = RuntimeService(small_config)
+    runtime.run_session(n_bars=2000, live_bars=200, log_predictions=True)
+
+    store = PredictionStore(small_config.logging.db_path)
+    try:
+        stats = retrain_log_stats(store, small_config.primary_symbol)
+    finally:
+        store.close()
+    assert stats.predictions == 200
+    assert stats.joined_samples == 200 - small_config.prediction.horizon
+    assert stats.pending == small_config.prediction.horizon
 
 
 def test_runtime_requires_trained_model(small_config, tmp_path):

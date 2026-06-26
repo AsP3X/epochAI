@@ -125,3 +125,34 @@ def test_extends_cache_instead_of_redownloading(tmp_path):
     assert len(df) == 250
     assert len(pd.read_parquet(cache_path)) == 250
     assert last_ms < int(df.index[200].timestamp() * 1000)
+
+
+def test_open_interest_since_clamped_to_exchange_window(tmp_path):
+    """Binance openInterestHist rejects startTime older than ~30 days."""
+    config = AppConfig.model_validate({"data": {"data_dir": str(tmp_path / "data")}})
+    downloader = HistoricalDownloader(config)
+    df = _ohlcv_frame(4000)  # ~41 days at 15m — wider than Binance OI retention
+    end_ms = int(df.index.max().timestamp() * 1000)
+    captured_since: list[int] = []
+
+    class FakeExchange:
+        has = {"fetchOpenInterestHistory": True}
+
+        def parse8601(self, iso: str) -> int:
+            return int(pd.Timestamp(iso).timestamp() * 1000)
+
+        def fetch_open_interest_history(self, symbol, timeframe, since, limit):
+            captured_since.append(since)
+            return [
+                {
+                    "timestamp": since + 15 * 60 * 1000,
+                    "openInterestValue": 100.0,
+                    "openInterestAmount": 100.0,
+                }
+            ]
+
+    result = downloader._attach_open_interest(FakeExchange(), "BTC/USDT", df.copy())
+    assert captured_since, "expected at least one OI fetch"
+    assert captured_since[0] >= end_ms - 30 * 24 * 60 * 60 * 1000
+    assert captured_since[0] < end_ms
+    assert "open_interest" in result.columns

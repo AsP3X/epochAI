@@ -24,7 +24,10 @@ class FeaturePipeline:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.groups: list[FeatureGroup] = build_feature_groups(config.features)
+        self.groups: list[FeatureGroup] = build_feature_groups(
+            config.features,
+            context_symbols=config.data.context_symbols,
+        )
         self._feature_names: list[str] | None = None
 
     @property

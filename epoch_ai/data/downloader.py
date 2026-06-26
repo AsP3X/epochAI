@@ -30,6 +30,8 @@ from epoch_ai.utils.timeframe import timeframe_to_minutes
 logger = get_logger(__name__)
 
 _OHLCV_COLS = ["open", "high", "low", "close", "volume"]
+# Binance openInterestHist retains only the latest ~30 days regardless of startTime.
+_OI_MAX_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
 
 
 class HistoricalDownloader:
@@ -52,6 +54,7 @@ class HistoricalDownloader:
         *,
         n_bars: int | None = None,
         force: bool = False,
+        skip_enrichment: bool = False,
     ) -> pd.DataFrame:
         """Return cleaned data for ``symbol``, using cache when available.
 
@@ -66,6 +69,8 @@ class HistoricalDownloader:
                 default is derived from ``historical_start_date`` and the full cache
                 is returned.
             force: Re-download even if a cache file exists.
+            skip_enrichment: When ``True``, skip cross-asset/sentiment/basis joins
+                (used when loading context symbols).
 
         Returns:
             A cleaned OHLCV(+context) DataFrame indexed by ``timestamp``.
@@ -77,7 +82,11 @@ class HistoricalDownloader:
             cached = pd.read_parquet(cache)
             if n_bars is None or len(cached) >= n_bars:
                 logger.info("Loaded %d cached bars for %s from %s", len(cached), symbol, cache)
-                return self._tail(cached, n_bars)
+                return self._finalize_load(
+                    self._tail(cached, n_bars),
+                    symbol,
+                    skip_enrichment=skip_enrichment,
+                )
 
         target_bars = n_bars or self._default_bar_count()
         if cached is not None and len(cached) > 0:
@@ -94,7 +103,21 @@ class HistoricalDownloader:
         df = align_and_clean(df, self.config.timeframe)
         df.to_parquet(cache)
         logger.info("Saved %d bars for %s to %s", len(df), symbol, cache)
-        return self._tail(df, n_bars)
+        return self._finalize_load(self._tail(df, n_bars), symbol, skip_enrichment=skip_enrichment)
+
+    def _finalize_load(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        *,
+        skip_enrichment: bool,
+    ) -> pd.DataFrame:
+        """Optionally enrich the primary symbol with cross-asset and alt data."""
+        if skip_enrichment or symbol != self.config.primary_symbol:
+            return df
+        from epoch_ai.data.enrichment import enrich_primary_market
+
+        return enrich_primary_market(df, self.config, self)
 
     @staticmethod
     def _tail(df: pd.DataFrame, n_bars: int | None) -> pd.DataFrame:
@@ -164,7 +187,7 @@ class HistoricalDownloader:
                 timeframe=self.config.timeframe,
                 start=self.config.data.start_date_iso(),
                 n_bars=target_bars,
-                seed=self.config.data.synthetic_seed,
+                seed=self._synthetic_seed(symbol),
             )
             progress.begin_rate_tracking()
             progress.advance_to(len(df))
@@ -174,6 +197,11 @@ class HistoricalDownloader:
             format_bytes(estimate_parquet_bytes(len(df))),
         )
         return df
+
+    def _synthetic_seed(self, symbol: str) -> int:
+        """Deterministic but distinct seed per symbol for synthetic fallback."""
+        offset = sum(ord(c) for c in symbol) % 997
+        return self.config.data.synthetic_seed + offset
 
     def _start_since_ms(self, exchange) -> int:
         """Resolve the ``since`` epoch-ms for the first fetch.
@@ -272,28 +300,100 @@ class HistoricalDownloader:
             )
 
         df = partial.iloc[:target_bars]
-        return self._attach_funding(exchange, symbol, df)
+        df = self._attach_funding(exchange, symbol, df)
+        if self.config.data.fetch_open_interest:
+            df = self._attach_open_interest(exchange, symbol, df)
+        return df
 
     def _attach_funding(self, exchange, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
-        """Best-effort attach of funding-rate history for derivatives markets."""
+        """Paginate funding-rate history for derivatives markets."""
         if self.config.data.market_type != "future":
             return df
         if not getattr(exchange, "has", {}).get("fetchFundingRateHistory"):
             return df
         try:
             since = self._start_since_ms(exchange)
-            history = exchange.fetch_funding_rate_history(symbol, since=since, limit=1000)
-            if history:
+            end_ms = int(df.index.max().timestamp() * 1000)
+            limit = 1000
+            chunks: list[pd.Series] = []
+            while since <= end_ms:
+                history = exchange.fetch_funding_rate_history(symbol, since=since, limit=limit)
+                if not history:
+                    break
                 fr = pd.DataFrame(history)
                 fr["timestamp"] = pd.to_datetime(fr["timestamp"], unit="ms", utc=True)
-                fr = fr.set_index("timestamp")["fundingRate"].rename("funding_rate")
-                if "funding_rate" in df.columns:
-                    # Agent: preserve cached funding; only fill gaps to avoid join overlap.
-                    df["funding_rate"] = df["funding_rate"].combine_first(
-                        fr.reindex(df.index, method="ffill")
-                    )
-                else:
-                    df = df.join(fr, how="left")
+                series = fr.set_index("timestamp")["fundingRate"].rename("funding_rate")
+                chunks.append(series)
+                since = int(history[-1]["timestamp"]) + 1
+                if len(history) < limit:
+                    break
+
+            if not chunks:
+                return df
+
+            funding = pd.concat(chunks).sort_index()
+            funding = funding[~funding.index.duplicated(keep="last")]
+            aligned = funding.reindex(df.index, method="ffill")
+            if "funding_rate" in df.columns:
+                df["funding_rate"] = df["funding_rate"].combine_first(aligned)
+            else:
+                df["funding_rate"] = aligned
+            logger.info(
+                "Attached paginated funding for %s (%d points, %d bars filled).",
+                symbol,
+                len(funding),
+                int(df["funding_rate"].notna().sum()),
+            )
         except Exception as exc:  # noqa: BLE001 - funding is best-effort context
             logger.info("Funding-rate history unavailable for %s: %s", symbol, exc)
+        return df
+
+    def _attach_open_interest(self, exchange, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+        """Paginate open-interest history when the exchange supports it."""
+        if self.config.data.market_type != "future":
+            return df
+        if not getattr(exchange, "has", {}).get("fetchOpenInterestHistory"):
+            return df
+        try:
+            end_ms = int(df.index.max().timestamp() * 1000)
+            configured_since = self._start_since_ms(exchange)
+            # Human: Binance rejects startTime outside its ~30-day OI retention window.
+            # Agent: CLAMP since to max(configured_since, end_ms - 30d); CAUSAL ffill only.
+            since = max(configured_since, end_ms - _OI_MAX_LOOKBACK_MS)
+            timeframe = self.config.timeframe
+            limit = 500
+            chunks: list[pd.Series] = []
+            while since <= end_ms:
+                history = exchange.fetch_open_interest_history(
+                    symbol, timeframe=timeframe, since=since, limit=limit
+                )
+                if not history:
+                    break
+                oi_df = pd.DataFrame(history)
+                oi_df["timestamp"] = pd.to_datetime(oi_df["timestamp"], unit="ms", utc=True)
+                value_col = "openInterestValue" if "openInterestValue" in oi_df.columns else "openInterestAmount"
+                series = oi_df.set_index("timestamp")[value_col].rename("open_interest")
+                chunks.append(series)
+                since = int(history[-1]["timestamp"]) + 1
+                if len(history) < limit:
+                    break
+
+            if not chunks:
+                return df
+
+            oi = pd.concat(chunks).sort_index()
+            oi = oi[~oi.index.duplicated(keep="last")]
+            aligned = oi.reindex(df.index, method="ffill")
+            if "open_interest" in df.columns:
+                df["open_interest"] = df["open_interest"].combine_first(aligned)
+            else:
+                df["open_interest"] = aligned
+            logger.info(
+                "Attached paginated open interest for %s (%d points, %d bars filled).",
+                symbol,
+                len(oi),
+                int(df["open_interest"].notna().sum()),
+            )
+        except Exception as exc:  # noqa: BLE001 - OI is best-effort context
+            logger.info("Open-interest history unavailable for %s: %s", symbol, exc)
         return df

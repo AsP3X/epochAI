@@ -137,3 +137,14 @@ def test_shipped_config_yaml_loads():
     config = load_config("config/config.yaml")
     assert config.model.calibration in {"none", "isotonic", "sigmoid"}
     assert config.walk_forward.recency_half_life == 4000
+    assert "ETH/USDT" in config.data.context_symbols
+    assert config.features.cross_asset is True
+    assert config.features.sentiment is True
+
+
+def test_data_enrichment_defaults():
+    data = AppConfig().data
+    assert "ETH/USDT" in data.context_symbols
+    assert data.fetch_fear_greed is True
+    assert data.fetch_open_interest is True
+    assert data.fetch_spot_basis is True

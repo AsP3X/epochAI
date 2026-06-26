@@ -67,8 +67,8 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
 ## Architecture (one-liner per module)
 
 - `epoch_ai/config` — Pydantic config + YAML loader (everything is config-driven).
-- `epoch_ai/data` — CCXT downloader with an **offline synthetic fallback** + cleaning.
-- `epoch_ai/features` — modular, causal feature groups (incl. ADX/VWAP/OBV/CCI,
+- `epoch_ai/data` — CCXT downloader with an **offline synthetic fallback** + cleaning; **enrichment** joins ETH context, Fear & Greed, spot basis, paginated funding/OI.
+- `epoch_ai/features` — modular, causal feature groups (incl. **cross-asset ETH**, ADX/VWAP/OBV/CCI,
   optional sentiment + on-chain) with config-driven look-back windows.
 - `epoch_ai/models` — pluggable GBM backends behind one interface, built via
  `factory.build_model` (chosen by `model.backend`): **LightGBM** (default, `model.txt`)

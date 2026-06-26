@@ -75,21 +75,161 @@ epochAI has two primary workflows:
 Future **Telegram** and **website** interfaces will call the same `TrainingService` and
 `RuntimeService` in `epoch_ai/services/` (see `docs/adr/0003-train-run-interfaces.md`).
 
+**New here?** Copy-paste the commands in [Train the model](#train-the-model) —
+[first-time training](#3-first-time-training) then
+[repeat to improve](#4-repeat-to-improve-the-model). The
+[full pipeline](#quick-start-full-pipeline) section covers backtest, paper-trade,
+tuning, and live replay.
+
+## Train the model
+
+Copy-paste commands below. Run them in order the first time, then repeat
+[step 4](#4-repeat-to-improve-the-model) whenever you want to refresh data and retrain.
+
+### 1. Install dependencies
+
 ```bash
 python3 -m venv .venv
-# Linux/macOS:
-source .venv/bin/activate
-# Windows (PowerShell):
-#   .venv\Scripts\Activate.ps1
-pip install -r requirements.txt          # core
-pip install -r requirements-dev.txt      # ruff + pytest
-# optional integrations (ccxt, vectorbt, mlflow, river, pandas_ta):
-# pip install -r requirements-optional.txt
+source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -r requirements-dev.txt   # ruff + pytest (for development)
 ```
 
-On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python` for lint and
-tests (e.g. `.venv\Scripts\python.exe -m pytest`). CCXT is optional; with
-`data.use_synthetic_fallback: true` (the default) the pipeline runs fully offline.
+On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`. CCXT is
+optional; with `data.use_synthetic_fallback: true` the pipeline runs fully offline when
+the exchange is unreachable.
+
+Optional: `pip install -r requirements-optional.txt` for live CCXT downloads, GPU
+backends (`xgboost`), MLflow, etc.
+
+### 2. Configure (optional)
+
+Edit `config/config.yaml` (symbol, timeframe, walk-forward params), then check it:
+
+```bash
+python -m epoch_ai info
+```
+
+Override a setting for one run without editing YAML:
+
+```bash
+python -m epoch_ai train --set walk_forward.step_size=100
+```
+
+### 3. First-time training
+
+Run these once to download history, train, and verify the model loads:
+
+```bash
+# 1. Download (or synthesize) market history
+python -m epoch_ai download --bars 16000
+
+# 2. Train — walk-forward over all history; registers model + optional SQLite logs
+python -m epoch_ai train --bars 16000 --log-predictions
+
+# 3. Smoke-test the registered model
+python -m epoch_ai run --bars 6000 --live-bars 100 \
+    --long-threshold 0.5 --short-threshold 0.5
+```
+
+**Fast smoke test** (fewer bars, capped steps):
+
+```bash
+python -m epoch_ai download --bars 8000
+python -m epoch_ai train --bars 8000 --max-steps 12
+```
+
+**GPU training** (optional, NVIDIA + `pip install xgboost`):
+
+```bash
+python -m epoch_ai train --bars 16000 --log-predictions \
+    --set model.backend=xgboost --set model.device=cuda
+```
+
+When training finishes you should see:
+
+```text
+=== Training complete ===
+Symbol            : BTC/USDT
+Model version     : v_20250626_123456
+Walk-forward steps: 70
+Final train rows  : 14,000
+```
+
+Models are saved under `artifacts/models/v_<timestamp>/` (open weights + metadata).
+
+| Flag | Purpose |
+| --- | --- |
+| `--bars N` | Cap history length |
+| `--max-steps N` | Limit walk-forward iterations (quick demos) |
+| `--log-predictions` | Log each OOS prediction + outcome to SQLite for retrain |
+| `--no-register` | Walk forward without writing to the registry |
+| `--set key=value` | Dotted config override (repeatable) |
+
+### 4. Repeat to improve the model
+
+After the first train, run this block on a schedule (daily, weekly, etc.) to pull fresh
+data, retrain, and paper-trade with the updated model:
+
+```bash
+# 1. Refresh cached history
+python -m epoch_ai download --bars 16000
+
+# 2. Retrain from logged predictions (needs prior runs with --log-predictions)
+python -m epoch_ai retrain --min-new-samples 50
+
+# 3. Run paper session and keep logging outcomes for the next retrain
+python -m epoch_ai run --bars 6000 --live-bars 300 --log-predictions \
+    --long-threshold 0.5 --short-threshold 0.5
+```
+
+**Alternative step 2 — full historical retrain** (walk-forward again on all data):
+
+```bash
+python -m epoch_ai train --bars 16000 --log-predictions
+```
+
+**Alternative step 2 — safe auto-update** (train challenger, promote only if better):
+
+```bash
+python -m epoch_ai auto-retrain
+```
+
+**Automate the repeat block** (retrain + promote on a timer):
+
+```bash
+python -m epoch_ai schedule-retrain --promote --interval-hours 24 --max-cycles 1000
+```
+
+**Inline retrain during a run** (refit every N bars without a separate job):
+
+```bash
+python -m epoch_ai run --bars 6000 --live-bars 300 --retrain-every 50 \
+    --log-predictions --long-threshold 0.5 --short-threshold 0.5
+```
+
+**Export** the promoted model for sharing:
+
+```bash
+python -m epoch_ai export
+```
+
+| Command | Use when |
+| --- | --- |
+| `python -m epoch_ai download` | Refresh parquet cache before each retrain |
+| `python -m epoch_ai train` | Full walk-forward retrain on all history |
+| `python -m epoch_ai retrain` | Refit from SQLite logs after `--log-predictions` runs |
+| `python -m epoch_ai auto-retrain` | Challenger vs champion; promote only if metric improves |
+| `python -m epoch_ai schedule-retrain --promote` | Hands-off repeat of `auto-retrain` |
+| `python -m epoch_ai run --log-predictions` | Paper/live session that feeds the next `retrain` |
+| `python -m epoch_ai run --retrain-every N` | Retrain inside a replay session every N bars |
+
+---
+
+## Quick start (full pipeline)
+
+The sections below cover download, run, backtest, paper-trade, tuning, and live
+replay. For **training only**, use [Train the model](#train-the-model) above.
 
 ### 1. Download (or synthesize) the longest possible history
 
@@ -101,14 +241,14 @@ If the exchange is reachable, CCXT fetches OHLCV (+ funding history) from
 `historical_start_date` forward. Otherwise a synthetic regime-switching dataset is
 generated and cached to `artifacts/data/`.
 
-### 2. Train the AI (progressive walk-forward + model registry)
+### 2. Train the AI
+
+See [Train the model](#train-the-model) for the full step-by-step guide. Minimal
+command:
 
 ```bash
 python -m epoch_ai train --bars 16000 --log-predictions
 ```
-
-This walks forward through history, learns from realised outcomes, and saves versioned
-models under `artifacts/models/`.
 
 ### 3. Run the trained model on live data (predict + trade)
 
@@ -145,7 +285,7 @@ python -m epoch_ai run --bars 6000 --live-bars 300 \
 Loads the latest registry model and steps bar-by-bar with risk rules + paper execution.
 Requires a prior `train` (or `backtest --register-models`).
 
-### 4. Run the first end-to-end progressive historical-learning backtest
+### 5. Run the first end-to-end progressive historical-learning backtest
 
 ```bash
 python -m epoch_ai backtest --bars 16000 --log-predictions --register-models
@@ -157,7 +297,7 @@ report plus the **out-of-sample learning curve** (accuracy first half vs second 
 Artifacts are written to `artifacts/backtests/` (`metrics.json`, `equity_curve.csv`,
 `step_history.csv`, `feature_importance.csv`).
 
-### 5. Simulate near-real-time paper trading with periodic updates
+### 6. Simulate near-real-time paper trading with periodic updates
 
 ```bash
 python -m epoch_ai paper-trade --bars 6000 --live-bars 300 \
@@ -171,20 +311,20 @@ hard-to-predict data so the execution path is exercised.
 
 Use `--retrain-every N` for inline expanding-window retrains during the replay.
 
-### 6. Hyperparameter sweep and config overrides
+### 7. Hyperparameter sweep and config overrides
 
 ```bash
 python -m epoch_ai tune --sweep config/sweeps/example.yaml --bars 4000 --max-steps 3
 python -m epoch_ai backtest --set walk_forward.step_size=100 --max-steps 5
 ```
 
-### 7. Periodic retrain from logs
+### 8. Periodic retrain from logs
 
 ```bash
 python -m epoch_ai retrain --min-new-samples 50
 ```
 
-### 7b. Automated, self-updating model (promote only if better)
+### 8b. Automated, self-updating model (promote only if better)
 
 ```bash
 # One-shot: train a challenger, score it + the current champion on a fresh holdout,
@@ -201,7 +341,7 @@ challenger trains on data up to a holdout (minus the embargo gap), so the compar
 genuinely out-of-sample. Tune the gate under `promotion:` in `config/config.yaml`
 (`eval_bars`, `metric`, `min_improvement`).
 
-### 8. Live replay (offline) or WebSocket stream
+### 9. Live replay (offline) or WebSocket stream
 
 ```bash
 python -m epoch_ai live --replay --bars 6000 --live-bars 300
@@ -228,7 +368,8 @@ walk_forward:
 ```
 
 The same engine powers both the **backtest simulation** and a **live retraining job**:
-predict → collect outcomes + context → append samples → retrain → advance.
+predict → collect outcomes + context → append samples → retrain → advance. See
+[Repeat to improve the model](#4-repeat-to-improve-the-model) for the retrain commands.
 
 The `embargo` gap purges the final bars of each training window so the forward-return
 labels (computed over `prediction.horizon` bars) cannot overlap — and therefore leak —

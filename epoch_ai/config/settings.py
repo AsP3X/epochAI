@@ -41,6 +41,33 @@ class DataConfig(BaseModel):
     use_synthetic_fallback: bool = True
     synthetic_seed: int = 7
     rate_limit_ms: int = 250
+    context_symbols: list[str] = Field(
+        default_factory=lambda: ["ETH/USDT"],
+        description=(
+            "Additional symbols whose OHLCV/derivatives are joined onto the primary "
+            "frame as context columns (e.g. eth_close for cross-asset features)."
+        ),
+    )
+    fetch_fear_greed: bool = Field(
+        default=True,
+        description="Fetch and join the Crypto Fear & Greed index (daily, ffilled).",
+    )
+    fetch_open_interest: bool = Field(
+        default=True,
+        description="Paginate open-interest history from the exchange when supported.",
+    )
+    fetch_spot_basis: bool = Field(
+        default=True,
+        description="Download spot reference close for perp basis features.",
+    )
+    spot_exchange: str = Field(
+        default="binance",
+        description="CCXT exchange id for spot reference OHLCV (basis features).",
+    )
+    spot_symbol: str | None = Field(
+        default=None,
+        description="Spot symbol for basis; defaults to the primary symbol.",
+    )
 
     # Sentinel values that mean "start from the exchange's first available candle".
     _EARLIEST_SENTINELS = {"earliest", "auto", "all", "max", ""}
@@ -73,6 +100,7 @@ class FeatureConfig(BaseModel):
     time: bool = True
     sentiment: bool = False
     onchain: bool = False
+    cross_asset: bool = True
     dropna: bool = True
 
     # Indicator look-back windows (config-driven; consumed by the feature groups).

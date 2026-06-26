@@ -54,4 +54,14 @@ class DerivativesFeatures(FeatureGroup):
             spike = liq.div(liq_baseline.where(liq_baseline > 0))
             out["deriv_liq_spike"] = spike.fillna(0.0).clip(0, 50)
 
+        if "spot_close" in df.columns:
+            spot = df["spot_close"].replace(0.0, np.nan)
+            basis = (df["close"] - spot) / spot
+            out["deriv_basis"] = basis
+            out["deriv_basis_ma"] = basis.rolling(48, min_periods=8).mean()
+            basis_mean = basis.rolling(96, min_periods=16).mean()
+            basis_std = basis.rolling(96, min_periods=16).std()
+            z = (basis - basis_mean) / basis_std.where(basis_std > 0)
+            out["deriv_basis_z"] = z.mask(basis_std.eq(0.0), 0.0)
+
         return out

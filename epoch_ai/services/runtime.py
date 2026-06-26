@@ -17,6 +17,7 @@ from epoch_ai.execution.live_engine import LiveSessionResult, LiveTradingEngine
 from epoch_ai.execution.live_loop import LiveLoopResult, run_bar_loop
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
+from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.base import BaseModel
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.services.types import PredictionResult, RuntimeStatus
@@ -103,6 +104,7 @@ class RuntimeService:
         live_bars: int = 500,
         retrain_every: int = 0,
         model_version: str | None = None,
+        log_predictions: bool = False,
     ) -> LiveLoopResult:
         """Execute a bar-by-bar paper session using a registered model.
 
@@ -143,12 +145,15 @@ class RuntimeService:
             raise ValueError("Not enough data for runtime session; increase n_bars.")
 
         split = len(data) - live_bars
+        store = PredictionStore(self.config.logging.db_path) if log_predictions else None
         return run_bar_loop(
             self.config,
             market,
             start_pos=split,
             retrain_every=retrain_every,
             model=model,
+            store=store,
+            model_version=self._model_version or "unknown",
         )
 
     def run_live_feed(

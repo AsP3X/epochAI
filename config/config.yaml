@@ -24,6 +24,13 @@ data:
   use_synthetic_fallback: false
   synthetic_seed: 7
   rate_limit_ms: 250
+  context_symbols:
+    - "ETH/USDT"              # joined as eth_close, eth_volume, etc. for cross-asset features
+  fetch_fear_greed: true       # Crypto Fear & Greed index (Alternative.me)
+  fetch_open_interest: true   # paginated OI history from the exchange
+  fetch_spot_basis: true       # spot reference close for deriv_basis features
+  spot_exchange: "binance"
+  spot_symbol: null            # defaults to primary symbol (BTC/USDT spot)
 
 # -----------------------------------------------------------------------------
 # Feature groups (toggle on/off). Disabled groups are skipped entirely.
@@ -34,8 +41,9 @@ features:
   derivatives: true
   volatility: true
   time: true
-  sentiment: false           # joins a `fear_greed` column when present, else no-op
-  onchain: false             # joins on-chain columns (e.g. exchange_netflow) when present
+  cross_asset: true            # ETH/BTC relative strength, ratio, correlation
+  sentiment: true              # joins a `fear_greed` column when present
+  onchain: false               # joins on-chain columns when present (requires external feed)
   dropna: true
   # Indicator look-back windows (config-driven; previously hard-coded in code).
   return_lags: [1, 3, 6, 12, 24, 48]

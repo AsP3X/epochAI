@@ -12,6 +12,8 @@ from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.learning.retrain_job import run_retrain
+from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
+from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.base import BaseModel
 from epoch_ai.models.factory import build_model
 from epoch_ai.utils.logging import get_logger
@@ -30,6 +32,14 @@ class LiveLoopResult:
 
 
 @dataclass(slots=True)
+class _PendingPrediction:
+    prediction_id: int
+    entry_pos: int
+    entry_price: float
+    raw_prediction: float
+
+
+@dataclass(slots=True)
 class _LiveContext:
     config: AppConfig
     feature_cols: list[str]
@@ -41,6 +51,9 @@ class _LiveContext:
     market: pd.DataFrame
     data: pd.DataFrame
     retrain_every: int
+    store: PredictionStore | None = None
+    model_version: str = "unknown"
+    pending: list[_PendingPrediction] | None = None
     bars_since_retrain: int = 0
     retrain_count: int = 0
 
@@ -53,6 +66,8 @@ def run_bar_loop(
     end_pos: int | None = None,
     retrain_every: int = 0,
     model: BaseModel | None = None,
+    store: PredictionStore | None = None,
+    model_version: str = "unknown",
 ) -> LiveLoopResult:
     """Step bar-by-bar through ``[start_pos, end_pos)`` with predict → risk → paper trade.
 
@@ -94,12 +109,17 @@ def run_bar_loop(
         market=market,
         data=data,
         retrain_every=max(0, retrain_every),
+        store=store,
+        model_version=model_version,
+        pending=[] if store is not None else None,
     )
 
     last = len(data) if end_pos is None else min(end_pos, len(data))
     close = market["close"]
+    symbol = config.primary_symbol
 
     for pos in range(start_pos, last):
+        _resolve_pending_outcomes(ctx, pos, close)
         ts = data.index[pos]
         price = float(close.loc[ts])
         raw_pred = float(ctx.model.predict(data[feature_cols].iloc[[pos]])[0])
@@ -114,10 +134,41 @@ def run_bar_loop(
             lost_trade=lost,
             cooldown_bars=config.risk.cooldown_bars,
         )
+        if ctx.store is not None and ctx.pending is not None:
+            feature_row = {
+                k: float(v) for k, v in data[feature_cols].iloc[pos].to_dict().items()
+            }
+            pred_id = ctx.store.log_prediction(
+                PredictionLog(
+                    timestamp=str(ts),
+                    symbol=symbol,
+                    model_version=ctx.model_version,
+                    horizon=config.prediction.horizon,
+                    prediction=raw_pred,
+                    confidence=decision.confidence,
+                    signal=decision.signal,
+                    entry_price=price,
+                    features=feature_row,
+                )
+            )
+            ctx.pending.append(
+                _PendingPrediction(
+                    prediction_id=pred_id,
+                    entry_pos=pos,
+                    entry_price=price,
+                    raw_prediction=raw_pred,
+                )
+            )
         ctx.bars_since_retrain += 1
         if ctx.retrain_every and ctx.bars_since_retrain >= ctx.retrain_every:
             _maybe_retrain(ctx, pos)
             ctx.bars_since_retrain = 0
+
+    if ctx.pending:
+        _resolve_pending_outcomes(ctx, last - 1, close)
+
+    if store is not None:
+        store.close()
 
     return LiveLoopResult(
         bars_processed=last - start_pos,
@@ -138,6 +189,36 @@ def _maybe_retrain(ctx: _LiveContext, pos: int) -> None:
     ctx.model.fit(x_train, y_train)
     ctx.retrain_count += 1
     logger.info("Inline retrain #%d on %d rows.", ctx.retrain_count, len(x_train))
+
+
+def _resolve_pending_outcomes(ctx: _LiveContext, current_pos: int, close: pd.Series) -> None:
+    """Log realised outcomes once the prediction horizon has elapsed."""
+    if not ctx.pending or ctx.store is None:
+        return
+    horizon = ctx.config.prediction.horizon
+    threshold = ctx.config.prediction.threshold
+    still_pending: list[_PendingPrediction] = []
+
+    for pending in ctx.pending:
+        if current_pos - pending.entry_pos < horizon:
+            still_pending.append(pending)
+            continue
+        resolve_pos = pending.entry_pos + horizon
+        resolve_ts = ctx.data.index[resolve_pos]
+        exit_price = float(close.loc[resolve_ts])
+        forward_ret = exit_price / pending.entry_price - 1.0
+        ctx.store.log_outcome(
+            OutcomeLog(
+                prediction_id=pending.prediction_id,
+                resolve_timestamp=str(resolve_ts),
+                forward_return=forward_ret,
+                realized_label=int(forward_ret > threshold),
+                exit_price=exit_price,
+                context={"runtime_session": True},
+            )
+        )
+
+    ctx.pending = still_pending
 
 
 def run_scheduled_retrain(config: AppConfig, *, min_new_samples: int = 50) -> int:

@@ -99,3 +99,23 @@ def test_sentiment_group_uses_fear_greed(market, small_config):
     features = FeaturePipeline(small_config).transform(enriched)
     assert "sent_fear_greed" in features.columns
     assert "sent_fear_greed_z" in features.columns
+
+
+def test_cross_asset_features_with_eth(market, small_config):
+    small_config.features.cross_asset = True
+    small_config.data.context_symbols = ["ETH/USDT"]
+    enriched = market.copy()
+    enriched["eth_close"] = enriched["close"] * 0.04
+    enriched["eth_volume"] = enriched["volume"] * 1.5
+    features = FeaturePipeline(small_config).transform(enriched)
+    assert "xasset_eth_ratio" in features.columns
+    assert "xasset_eth_ret_1" in features.columns
+    assert "xasset_eth_corr_48" in features.columns
+
+
+def test_basis_features_with_spot_close(market, small_config):
+    enriched = market.copy()
+    enriched["spot_close"] = enriched["close"] * 0.999
+    features = FeaturePipeline(small_config).transform(enriched)
+    assert "deriv_basis" in features.columns
+    assert "deriv_basis_z" in features.columns
