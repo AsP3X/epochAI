@@ -180,41 +180,74 @@ class PredictionConfig(BaseModel):
     )
 
 
+class EvolutionConfig(BaseModel):
+    """Evolutionary architecture search for ``evolved_nn`` backend."""
+
+    enabled: bool = Field(
+        default=True,
+        description="When false, train the default MLP genome without evolution.",
+    )
+    population_size: int = Field(default=12, ge=2, description="Candidates per generation.")
+    generations: int = Field(default=8, ge=1, description="Evolutionary generations per fit().")
+    elite_fraction: float = Field(
+        default=0.25,
+        ge=0.05,
+        le=0.5,
+        description="Top fraction kept unchanged each generation.",
+    )
+    mutation_sigma: float = Field(
+        default=0.2,
+        ge=0.01,
+        le=1.0,
+        description="Relative mutation strength for offspring genomes.",
+    )
+    seed: int = Field(default=42, description="RNG seed for reproducible evolution.")
+    fast_fit: bool = Field(
+        default=False,
+        description="Skip evolution and train a fixed default MLP (tests / quick smokes).",
+    )
+
+
+class NNConfig(BaseModel):
+    """PyTorch MLP training limits for ``evolved_nn``."""
+
+    max_layers: int = Field(default=3, ge=1, le=5)
+    hidden_size_min: int = Field(default=32, ge=8)
+    hidden_size_max: int = Field(default=512, ge=32)
+    max_epochs: int = Field(default=200, ge=10)
+    batch_size: int = Field(default=256, ge=16)
+    patience: int = Field(default=15, ge=1, description="Early-stopping patience on val loss.")
+
+
 class ModelConfig(BaseModel):
-    """LightGBM hyper-parameters, calibration and model-registry location.
+    """Model hyper-parameters, calibration and model-registry location.
 
     Attributes:
         val_fraction: Fraction of the most-recent training rows held out (time-ordered)
             for early stopping and probability calibration. ``0`` disables both.
-        class_weight: ``"balanced"`` derives ``scale_pos_weight`` from the training
-            label balance (helps when "up" vs "down" labels are skewed); ``"none"``
-            leaves LightGBM unweighted.
+        class_weight: ``"balanced"`` derives positive-class weight from label balance;
+            ``"none"`` leaves the loss unweighted.
         calibration: Post-hoc probability calibration fit on the validation tail —
             ``"isotonic"`` (non-parametric, monotone), ``"sigmoid"`` (Platt scaling)
             or ``"none"``. Only applies to classification.
-        refit_full_after_es: When early stopping is active, refit the booster on the
-            **full** training window (including the held-out validation tail) for the
-            early-stopping-selected number of rounds. This stops the deployed model
-            from permanently discarding its most-recent ``val_fraction`` of bars while
-            still choosing the iteration count honestly on out-of-sample data.
-        backend: Gradient-boosting library — ``"lightgbm"`` (default, CPU-optimised) or
-            ``"xgboost"`` (optional dependency; supports real CUDA-GPU training on NVIDIA
-            cards via ``device="cuda"``). Both implement the same model interface and
-            store open weights in the registry.
-        device: Compute device — ``"cpu"`` (default, always available), ``"gpu"`` or
-            ``"cuda"``. For LightGBM ``gpu`` is OpenCL; for XGBoost both ``gpu``/``cuda``
-            map to CUDA. A GPU request that the installed build/host cannot satisfy
-            **falls back to CPU** automatically so a model can always be trained.
+        refit_full_after_es: When early stopping is active, refit on the **full**
+            training window for the early-stopping-selected epoch count.
+        backend: ``"evolved_nn"`` (default, evolutionary PyTorch MLP),
+            ``"lightgbm"``, or ``"xgboost"`` (optional GBM backends).
+        evolution: Evolutionary search knobs (``evolved_nn`` only).
+        nn: MLP training limits (``evolved_nn`` only).
+        device: ``"cpu"`` (default), ``"gpu"`` or ``"cuda"`` for PyTorch/XGBoost.
         gpu_platform_id: OpenCL platform id for LightGBM ``device="gpu"`` (``-1`` = auto).
-        gpu_device_id: OpenCL/CUDA device ordinal (``-1`` = auto). Pins a specific GPU on
-            multi-GPU hosts (used by both backends).
+        gpu_device_id: OpenCL/CUDA device ordinal (``-1`` = auto).
     """
 
     model_dir: str = "artifacts/models"
-    backend: Literal["lightgbm", "xgboost"] = Field(
-        default="lightgbm",
-        description="Gradient-boosting backend; xgboost enables real CUDA-GPU training.",
+    backend: Literal["evolved_nn", "lightgbm", "xgboost"] = Field(
+        default="evolved_nn",
+        description="Prediction backend; evolved_nn uses evolutionary PyTorch MLP.",
     )
+    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
+    nn: NNConfig = Field(default_factory=NNConfig)
     num_boost_round: int = 300
     early_stopping_rounds: int | None = 30
     val_fraction: float = Field(

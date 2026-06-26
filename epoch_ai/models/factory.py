@@ -2,11 +2,11 @@
 
 The prediction engine, retrain job, promotion gate and live loop all build models
 through :func:`build_model` so the concrete learner is chosen by configuration
-(``model.backend``) rather than hard-coded. LightGBM is the default; XGBoost is an
-optional backend that enables real CUDA-GPU training on NVIDIA cards.
+(``model.backend``) rather than hard-coded. ``evolved_nn`` (default) uses an
+evolutionary PyTorch MLP; LightGBM and XGBoost remain optional fallbacks.
 
-The XGBoost implementation is imported lazily so the core pipeline keeps running when
-the optional ``xgboost`` package is not installed.
+Heavy backends are imported lazily so the core pipeline keeps running when optional
+packages are not installed (use ``model.backend=lightgbm`` in that case).
 """
 
 from __future__ import annotations
@@ -16,13 +16,24 @@ from epoch_ai.models.base import BaseModel
 from epoch_ai.models.lightgbm_model import LightGBMModel
 
 #: Supported backend identifiers (also stored in registry metadata).
-BACKENDS = ("lightgbm", "xgboost")
+BACKENDS = ("evolved_nn", "lightgbm", "xgboost")
 
 
 def model_class(backend: str) -> type[BaseModel]:
-    """Return the model class for ``backend`` (lazy-importing XGBoost on demand)."""
+    """Return the model class for ``backend`` (lazy-importing optional deps on demand)."""
     if backend == "lightgbm":
         return LightGBMModel
+    if backend == "evolved_nn":
+        try:
+            from epoch_ai.models.evolved_nn_model import EvolvedNNModel
+        except ImportError as exc:  # pragma: no cover - exercised only without torch
+            raise ImportError(
+                "model.backend='evolved_nn' requires PyTorch. "
+                "Install with `pip install torch` (or "
+                "`pip install -r requirements-optional.txt`), or set "
+                "model.backend='lightgbm'."
+            ) from exc
+        return EvolvedNNModel
     if backend == "xgboost":
         try:
             from epoch_ai.models.xgboost_model import XGBoostModel

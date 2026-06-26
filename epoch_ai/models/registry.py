@@ -198,16 +198,20 @@ class ModelRegistry:
         backend = str(meta.get("backend", "lightgbm"))
         model_file = str(meta.get("model_file", "model.txt"))
 
-        # Include the calibration sidecar so the exported bundle predicts identically.
-        for name in (model_file, f"{model_file}.calibration.json", "metadata.json"):
+        # Include backend sidecars so the exported bundle predicts identically.
+        sidecars = [model_file, f"{model_file}.calibration.json", "metadata.json"]
+        if backend == "evolved_nn":
+            sidecars.extend([f"{model_file}.genome.json", f"{model_file}.scaler.json"])
+        for name in sidecars:
             src_file = src / name
             if src_file.exists():
                 shutil.copy2(src_file, out / name)
 
-        fmt = "XGBoost JSON booster" if backend == "xgboost" else "LightGBM text booster"
-        loader = (
-            "epoch_ai.models.registry.ModelRegistry(...).load(label, cfg.model)"
-        )
+        fmt = {
+            "xgboost": "XGBoost JSON booster",
+            "evolved_nn": "PyTorch state_dict",
+        }.get(backend, "LightGBM text booster")
+        loader = "epoch_ai.models.registry.ModelRegistry(...).load(label, cfg.model)"
         readme = out / "README.txt"
         readme.write_text(
             "epochAI open-weights bundle\n"

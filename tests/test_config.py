@@ -94,8 +94,16 @@ def test_invalid_device_rejected():
         AppConfig.model_validate({"model": {"device": "tpu"}})
 
 
-def test_model_backend_default_is_lightgbm():
-    assert AppConfig().model.backend == "lightgbm"
+def test_model_backend_default_is_evolved_nn():
+    assert AppConfig().model.backend == "evolved_nn"
+    assert AppConfig().model.evolution.enabled is True
+
+
+def test_evolution_config_defaults():
+    evo = AppConfig().model.evolution
+    assert evo.population_size >= 2
+    assert evo.generations >= 1
+    assert evo.fast_fit is False
 
 
 def test_invalid_backend_rejected():
@@ -104,7 +112,7 @@ def test_invalid_backend_rejected():
 
 
 def test_shipped_config_yaml_backend():
-    assert load_config("config/config.yaml").model.backend == "lightgbm"
+    assert load_config("config/config.yaml").model.backend == "evolved_nn"
 
 
 def test_promotion_defaults():

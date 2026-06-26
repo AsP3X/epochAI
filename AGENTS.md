@@ -72,15 +72,17 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
   optional **patterns** / **manipulation** proxies, sentiment + on-chain) with config-driven look-back windows.
 - `epoch_ai/execution` — risk manager + paper trader; optional **SafetyScorer** gate (`safety.enabled`).
 - `epoch_ai/models` — pluggable GBM backends behind one interface, built via
- `factory.build_model` (chosen by `model.backend`): **LightGBM** (default, `model.txt`)
- and optional **XGBoost** (`model.json`, lazy-imported; real CUDA-GPU training on NVIDIA
- cards via `model.device=cuda`). Both share balanced class weighting + post-hoc
- probability calibration (`calibration.py`); the calibration sidecar
- (`<model_file>.calibration.json`) travels with the bundle. GPU requests auto-fall back
- to CPU when the build/host can't satisfy them. The registry is backend-aware (metadata
- stores `backend`/`model_file`) and also tracks a promoted **champion** pointer
- (`current.json`) used by runtime. Construct models via `build_model`, never by importing
- a concrete class, so `model.backend` is honoured everywhere.
+ `factory.build_model` (chosen by `model.backend`): **evolved_nn** (default, evolutionary
+ PyTorch MLP in `model.pt` + genome/scaler sidecars), **LightGBM** (`model.txt`), and
+ optional **XGBoost** (`model.json`, lazy-imported; real CUDA-GPU training on NVIDIA
+ cards via `model.device=cuda`). Both GBM backends share balanced class weighting +
+ post-hoc probability calibration (`calibration.py`); the calibration sidecar travels
+ with the bundle. GPU requests auto-fall back to CPU when the build/host can't satisfy
+ them. The registry is backend-aware (metadata stores `backend`/`model_file`) and also
+ tracks a promoted **champion** pointer (`current.json`) used by runtime. Construct
+ models via `build_model`, never by importing a concrete class, so `model.backend` is
+ honoured everywhere. **Real data:** `evolved_nn` training disables synthetic fallback;
+ cached real parquet is used when live CCXT extension fails.
 - `epoch_ai/logging_system` — SQLite prediction/outcome store + dataset joiner.
 - `epoch_ai/learning` — the progressive walk-forward engine (core component);
  `step_metrics.py` (OOS logloss/Brier/AUC/threshold-aware) + `weighting.py`
@@ -118,8 +120,9 @@ and **ask** — not commit or push on their own.
   `xgboost`, `vectorbt`, `mlflow`, `river`, `pandas_ta` live in
   `requirements-optional.txt` (vectorbt/numba can be fragile on Python 3.12). All are
   lazy-imported with graceful fallbacks, so the core pipeline runs without them. Install
-  on demand only. `xgboost` is only needed for `model.backend=xgboost` (CUDA-GPU
-  training); tests for it `pytest.importorskip` and are skipped when it is absent.
+  on demand only. `torch` is required for `model.backend=evolved_nn`; `xgboost` is only
+  needed for `model.backend=xgboost` (CUDA-GPU training); tests for optional backends
+  `pytest.importorskip` when absent.
 - **Artifacts are gitignored** under `artifacts/` (parquet data cache, model registry,
   SQLite logs, MLflow runs). The SQLite prediction store is **cumulative across runs** —
   delete `artifacts/logs/` (or the whole `artifacts/`) to reset counts.

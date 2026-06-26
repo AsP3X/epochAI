@@ -37,11 +37,20 @@ def test_download_progress_bar_disabled_does_not_write(capsys):
     assert captured.err == ""
 
 
-def test_download_progress_rate_ignores_baseline():
+def test_download_progress_rate_ignores_baseline(monkeypatch):
+    clock = {"t": 0.0}
+
+    def mono() -> float:
+        return clock["t"]
+
+    monkeypatch.setattr("epoch_ai.utils.progress.time.monotonic", mono)
+
     bar = DownloadProgressBar(total=1000, desc="Test", enabled=False)
     bar.advance_to(800)
     bar.begin_rate_tracking()
+    clock["t"] = 1.0
     bar.advance_to(900)
-    assert bar._effective_rate() == 0.0
-    bar._recent_rates.append(100.0)
+    # Rate uses progress since begin_rate_tracking (100 bars/s), not since bar 0.
     assert bar._effective_rate() == 100.0
+    bar._recent_rates.append(200.0)
+    assert bar._effective_rate() == 150.0

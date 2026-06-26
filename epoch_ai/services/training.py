@@ -43,12 +43,27 @@ class TrainingService:
         self.config = config
 
     def download(self, *, n_bars: int | None = None, force: bool = False) -> pd.DataFrame:
-        """Fetch or synthesize OHLCV history and cache as parquet."""
-        return HistoricalDownloader(self.config).load_or_download(
-            self.config.primary_symbol,
+        """Fetch OHLCV history and cache as parquet.
+
+        When ``model.backend`` is ``evolved_nn``, synthetic fallback is disabled so
+        training always uses real exchange or cached real parquet data.
+        """
+        cfg = self._training_data_config()
+        return HistoricalDownloader(cfg).load_or_download(
+            cfg.primary_symbol,
             n_bars=n_bars,
             force=force,
         )
+
+    def _training_data_config(self) -> AppConfig:
+        """Return config with real-data guarantees for evolved_nn training."""
+        cfg = self.config
+        if cfg.model.backend != "evolved_nn":
+            return cfg
+        if cfg.data.use_synthetic_fallback:
+            cfg = cfg.model_copy(deep=True)
+            cfg.data.use_synthetic_fallback = False
+        return cfg
 
     def train(
         self,
@@ -63,7 +78,7 @@ class TrainingService:
         This is the primary **train-the-AI** operation: walk forward through history,
         learn from realised outcomes, and persist a versioned model to the registry.
         """
-        cfg = self.config.model_copy(deep=True)
+        cfg = self._training_data_config().model_copy(deep=True)
         if max_steps is not None:
             cfg.walk_forward.max_steps = max_steps
 
@@ -100,7 +115,7 @@ class TrainingService:
         store: PredictionStore | None = None,
     ) -> BacktestResult:
         """Run a full progressive backtest with strategy metrics."""
-        cfg = self.config.model_copy(deep=True)
+        cfg = self._training_data_config().model_copy(deep=True)
         if max_steps is not None:
             cfg.walk_forward.max_steps = max_steps
 

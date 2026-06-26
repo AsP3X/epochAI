@@ -157,10 +157,14 @@ class HistoricalDownloader:
         if not self.config.data.use_synthetic_fallback:
             detail = ccxt_reason or "CCXT unavailable"
             if base_df is not None and len(base_df) > 0:
-                raise RuntimeError(
-                    f"Could not extend cached data for {symbol} to {target_bars} bars "
-                    f"({detail}). {len(base_df)} cached bars remain at {self._cache_path(symbol)}."
+                logger.warning(
+                    "CCXT unavailable for %s (%s); using %d cached real bars (target %d).",
+                    symbol,
+                    detail,
+                    len(base_df),
+                    target_bars,
                 )
+                return base_df
             raise RuntimeError(
                 f"No data available for {symbol} and synthetic fallback disabled ({detail}). "
                 "Install ccxt (requirements-optional.txt), enable data.use_synthetic_fallback, "

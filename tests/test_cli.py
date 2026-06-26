@@ -30,6 +30,13 @@ def test_cli_backtest_smoke(tmp_path, monkeypatch):
     cfg.write_text(
         """
 symbols: ["BTC/USDT"]
+data:
+  use_synthetic_fallback: true
+  data_dir: artifacts/data
+model:
+  backend: lightgbm
+  num_boost_round: 40
+  early_stopping_rounds: null
 walk_forward:
   initial_train_period: 800
   step_size: 400
@@ -43,7 +50,7 @@ walk_forward:
             "--config",
             str(cfg),
             "--bars",
-            "2000",
+            "5000",
             "--max-steps",
             "2",
             "--out",
@@ -71,8 +78,10 @@ data:
   use_synthetic_fallback: true
   data_dir: artifacts/data
 model:
+  backend: lightgbm
   model_dir: artifacts/models
   num_boost_round: 40
+  early_stopping_rounds: null
 walk_forward:
   initial_train_period: 800
 promotion:

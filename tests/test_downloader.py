@@ -45,7 +45,7 @@ def test_synthetic_fallback_when_ccxt_unavailable(tmp_path, monkeypatch):
     assert (tmp_path / "data" / "BTC-USDT_15m.parquet").exists()
 
 
-def test_synthetic_fallback_disabled_raises(tmp_path, monkeypatch):
+def test_synthetic_fallback_disabled_raises_without_cache(tmp_path, monkeypatch):
     config = AppConfig.model_validate(
         {
             "data": {
@@ -61,6 +61,30 @@ def test_synthetic_fallback_disabled_raises(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="synthetic fallback disabled"):
         HistoricalDownloader(config).load_or_download(n_bars=500)
+
+
+def test_uses_cached_real_data_when_extension_fails(tmp_path, monkeypatch):
+    config = AppConfig.model_validate(
+        {
+            "data": {
+                "data_dir": str(tmp_path / "data"),
+                "use_synthetic_fallback": False,
+            }
+        }
+    )
+    downloader = HistoricalDownloader(config)
+    cached = _ohlcv_frame(200)
+    cache_path = downloader._cache_path(config.primary_symbol)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cached.to_parquet(cache_path)
+
+    monkeypatch.setattr(
+        HistoricalDownloader,
+        "_download_ccxt",
+        lambda *args, **kwargs: None,
+    )
+    df = downloader.load_or_download(n_bars=500)
+    assert len(df) == 200
 
 
 def test_returns_recent_tail_from_cache(tmp_path, monkeypatch):

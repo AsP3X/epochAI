@@ -20,9 +20,9 @@ operating closer to real-time.
 
 - **Progressive historical learning engine** — expanding/rolling walk-forward with
   configurable retraining frequency and recency weighting (enabled by default).
-- **Calibrated, class-balanced model** — LightGBM with balanced class weighting,
-  post-hoc probability calibration (isotonic/Platt) fit on a held-out validation
-  tail, and mild L1/L2 regularisation, so `P(up)` is trustworthy for thresholding.
+- **Calibrated, class-balanced model** — default **evolved_nn** (evolutionary PyTorch MLP
+  on causal features) with balanced class weighting and post-hoc probability
+  calibration (isotonic/Platt); **LightGBM** / **XGBoost** remain optional backends.
 - **Honest, horizon-aware evaluation** — per-step OOS metrics include logloss,
   Brier, ROC-AUC and execution-threshold-aware accuracy; the backtest holds each
   signal for the full prediction horizon (`backtest.horizon_aware`).
@@ -412,8 +412,11 @@ backtest:
 **Model backends & GPU acceleration (optional).** The learner is pluggable via
 `model.backend`:
 
-- **`lightgbm`** (default) — fast CPU training. `model.device=gpu` uses LightGBM's
-  OpenCL backend (requires a GPU-enabled LightGBM build).
+- **`evolved_nn`** (default) — evolutionary PyTorch MLP on engineered features. Requires
+  `pip install torch`. Training uses **real** exchange or cached parquet data (synthetic
+  fallback is disabled). Tune search with `model.evolution.*` and `model.nn.*`.
+- **`lightgbm`** — fast CPU GBM training. `model.device=gpu` uses LightGBM's OpenCL
+  backend (requires a GPU-enabled LightGBM build).
 - **`xgboost`** (optional, `pip install xgboost`) — ships prebuilt **CUDA wheels**, so
   `model.device=cuda` trains on NVIDIA GPUs out of the box. On large datasets this is a
   real speed-up (≈2× on ~1M rows in local benchmarks); on small/medium tabular data

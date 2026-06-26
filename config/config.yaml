@@ -72,7 +72,22 @@ prediction:
 # -----------------------------------------------------------------------------
 model:
   model_dir: "artifacts/models"
-  backend: lightgbm           # lightgbm | xgboost (xgboost enables real CUDA-GPU training)
+  backend: evolved_nn           # evolved_nn (default) | lightgbm | xgboost
+  evolution:
+    enabled: true
+    population_size: 12
+    generations: 8
+    elite_fraction: 0.25
+    mutation_sigma: 0.2
+    seed: 42
+    fast_fit: false             # true for quick tests / smokes (skips evolution)
+  nn:
+    max_layers: 3
+    hidden_size_min: 32
+    hidden_size_max: 512
+    max_epochs: 200
+    batch_size: 256
+    patience: 15
   num_boost_round: 300
   early_stopping_rounds: 30
   val_fraction: 0.15          # time-ordered tail for early stopping + calibration
