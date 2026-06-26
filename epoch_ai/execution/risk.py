@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from epoch_ai.config.settings import PredictionConfig, RiskConfig
+from epoch_ai.config.settings import PredictionConfig, RiskConfig, SafetyConfig
 from epoch_ai.execution.portfolio_state import PortfolioState
+from epoch_ai.execution.safety import SafetyAssessment
 
 
 @dataclass(slots=True)
@@ -34,9 +35,15 @@ class RiskDecision:
 class RiskManager:
     """Translate model predictions into sized, risk-constrained positions."""
 
-    def __init__(self, risk: RiskConfig, prediction: PredictionConfig) -> None:
+    def __init__(
+        self,
+        risk: RiskConfig,
+        prediction: PredictionConfig,
+        safety: SafetyConfig | None = None,
+    ) -> None:
         self.risk = risk
         self.prediction = prediction
+        self.safety = safety or SafetyConfig()
 
     def confidence(self, prediction: float) -> float:
         """Map a raw model output to a confidence score in ``[0, 1]``.
@@ -52,18 +59,30 @@ class RiskManager:
         self,
         prediction: float,
         portfolio: PortfolioState | None = None,
+        *,
+        safety: SafetyAssessment | None = None,
     ) -> RiskDecision:
         """Produce a :class:`RiskDecision` from a single model output.
 
         Args:
             prediction: P(up) (classification) or expected return (regression).
             portfolio: Optional live portfolio snapshot for halts and cooldowns.
+            safety: Optional pre-trade suspicion assessment from :class:`SafetyScorer`.
 
         Returns:
             A sized, direction-aware :class:`RiskDecision`.
         """
         conf = self.confidence(prediction)
         halted = False
+
+        if safety is not None and self.safety.enabled:
+            if safety.suspicion_score >= self.safety.max_suspicion_score:
+                return RiskDecision(
+                    signal=0,
+                    confidence=conf,
+                    target_weight=0.0,
+                    halted=True,
+                )
 
         if conf < self.risk.min_confidence:
             return RiskDecision(signal=0, confidence=conf, target_weight=0.0, halted=False)
@@ -105,6 +124,13 @@ class RiskManager:
             self.risk.max_leverage,
             conf * self.risk.risk_per_trade * self.risk.max_leverage,
         )
+        if (
+            safety is not None
+            and self.safety.enabled
+            and self.safety.scale_weight_by_suspicion
+            and safety.suspicion_score > 0.0
+        ):
+            weight *= max(0.0, 1.0 - safety.suspicion_score)
         return RiskDecision(
             signal=signal,
             confidence=conf,

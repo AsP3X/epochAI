@@ -86,4 +86,17 @@ def build_feature_groups(
                 return_lags=config.return_lags,
             )
         )
+    if config.patterns:
+        from epoch_ai.features.patterns import PatternFeatures
+
+        groups.append(
+            PatternFeatures(
+                lookbacks=config.pattern_lookbacks,
+                pivot_confirm_bars=config.pivot_confirm_bars,
+            )
+        )
+    if config.manipulation:
+        from epoch_ai.features.manipulation import ManipulationFeatures
+
+        groups.append(ManipulationFeatures())
     return groups

@@ -119,3 +119,28 @@ def test_basis_features_with_spot_close(market, small_config):
     features = FeaturePipeline(small_config).transform(enriched)
     assert "deriv_basis" in features.columns
     assert "deriv_basis_z" in features.columns
+
+
+def test_pattern_features_when_enabled(market, small_config):
+    small_config.features.patterns = True
+    features = FeaturePipeline(small_config).transform(market)
+    pat_cols = [c for c in features.columns if c.startswith("pat_")]
+    assert len(pat_cols) >= 10
+    assert features.shape[0] > 0
+
+
+def test_manipulation_features_when_enabled(market, small_config):
+    small_config.features.manipulation = True
+    features = FeaturePipeline(small_config).transform(market)
+    assert any(c.startswith("manip_") for c in features.columns)
+
+
+def test_onchain_token_safety_columns(market, small_config):
+    small_config.features.onchain = True
+    enriched = market.copy()
+    enriched["liquidity_usd"] = np.linspace(1e6, 0.5e6, len(enriched))
+    enriched["holder_top10_pct"] = np.linspace(0.3, 0.85, len(enriched))
+    enriched["lp_locked_pct"] = np.linspace(0.9, 0.1, len(enriched))
+    features = FeaturePipeline(small_config).transform(enriched)
+    for col in ["oc_liq_chg", "oc_holder_conc", "oc_lp_lock"]:
+        assert col in features.columns

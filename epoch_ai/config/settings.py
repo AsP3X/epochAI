@@ -101,6 +101,14 @@ class FeatureConfig(BaseModel):
     sentiment: bool = False
     onchain: bool = False
     cross_asset: bool = True
+    patterns: bool = Field(
+        default=False,
+        description="Enable classic chart-pattern geometry features (secondary signal).",
+    )
+    manipulation: bool = Field(
+        default=False,
+        description="Enable rug-pull/manipulation proxy features from OHLCV and derivatives.",
+    )
     dropna: bool = True
 
     # Indicator look-back windows (config-driven; consumed by the feature groups).
@@ -120,12 +128,27 @@ class FeatureConfig(BaseModel):
         default_factory=lambda: [12, 24, 48, 96],
         description="Rolling realised-volatility windows.",
     )
+    pattern_lookbacks: list[int] = Field(
+        default_factory=lambda: [48, 96, 192],
+        description="Look-back windows (bars) for pattern geometry scoring.",
+    )
+    pivot_confirm_bars: int = Field(
+        default=3,
+        ge=1,
+        description="Bars after a candidate pivot before it is treated as confirmed (causal lag).",
+    )
 
     @model_validator(mode="after")
     def _validate_windows(self) -> FeatureConfig:
         # Window lists must be non-empty positive integers so feature groups emit
         # a stable set of columns; an empty list would silently drop a sub-family.
-        for name in ("return_lags", "ma_windows", "rsi_periods", "vol_windows"):
+        for name in (
+            "return_lags",
+            "ma_windows",
+            "rsi_periods",
+            "vol_windows",
+            "pattern_lookbacks",
+        ):
             values = getattr(self, name)
             if not values or any(int(v) < 1 for v in values):
                 raise ValueError(f"features.{name} must be a non-empty list of positive ints.")
@@ -310,6 +333,26 @@ class PromotionConfig(BaseModel):
     )
 
 
+class SafetyConfig(BaseModel):
+    """Pre-trade manipulation/rug-risk gate (execution layer only)."""
+
+    enabled: bool = False
+    max_suspicion_score: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description="Block or flatten when combined suspicion exceeds this score.",
+    )
+    scale_weight_by_suspicion: bool = Field(
+        default=True,
+        description="When True, linearly reduce target_weight as suspicion rises.",
+    )
+    block_on_missing_onchain: bool = Field(
+        default=False,
+        description="When True and symbol expects on-chain cols, missing data => max suspicion.",
+    )
+
+
 class RiskConfig(BaseModel):
     """Risk-management parameters used by the (separate) execution layer."""
 
@@ -427,6 +470,7 @@ class AppConfig(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     walk_forward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
     promotion: PromotionConfig = Field(default_factory=PromotionConfig)
+    safety: SafetyConfig = Field(default_factory=SafetyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)

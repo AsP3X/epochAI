@@ -148,3 +148,28 @@ def test_data_enrichment_defaults():
     assert data.fetch_fear_greed is True
     assert data.fetch_open_interest is True
     assert data.fetch_spot_basis is True
+
+
+def test_pattern_config_defaults():
+    from epoch_ai.config.settings import FeatureConfig
+
+    fc = FeatureConfig()
+    assert fc.patterns is False
+    assert fc.manipulation is False
+    assert fc.pattern_lookbacks == [48, 96, 192]
+    assert fc.pivot_confirm_bars == 3
+
+
+def test_pattern_lookbacks_must_be_positive():
+    from epoch_ai.config.settings import FeatureConfig
+
+    with pytest.raises(ValueError, match="pattern_lookbacks"):
+        FeatureConfig(pattern_lookbacks=[])
+
+
+def test_safety_config_defaults():
+    from epoch_ai.config.settings import SafetyConfig
+
+    sc = SafetyConfig()
+    assert sc.enabled is False
+    assert sc.max_suspicion_score == 0.75

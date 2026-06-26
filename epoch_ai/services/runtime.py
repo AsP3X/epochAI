@@ -35,7 +35,7 @@ class RuntimeService:
         self.config = config
         self.registry = ModelRegistry(config.model.model_dir)
         self.pipeline = FeaturePipeline(config)
-        self.risk = RiskManager(config.risk, config.prediction)
+        self.risk = RiskManager(config.risk, config.prediction, config.safety)
         self._model: BaseModel | None = None
         self._model_version: str | None = None
         self._metadata: dict[str, Any] = {}

@@ -10,6 +10,7 @@ from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.paper_trader import PaperTrader
 from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.risk import RiskManager
+from epoch_ai.execution.safety import SafetyScorer
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.learning.retrain_job import run_retrain
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
@@ -44,6 +45,7 @@ class _LiveContext:
     config: AppConfig
     feature_cols: list[str]
     risk_manager: RiskManager
+    safety_scorer: SafetyScorer | None
     trader: PaperTrader
     portfolio: PortfolioState
     model: BaseModel
@@ -101,7 +103,8 @@ def run_bar_loop(
     ctx = _LiveContext(
         config=config,
         feature_cols=feature_cols,
-        risk_manager=RiskManager(config.risk, config.prediction),
+        risk_manager=RiskManager(config.risk, config.prediction, config.safety),
+        safety_scorer=SafetyScorer(config.safety) if config.safety.enabled else None,
         trader=PaperTrader(config.risk),
         portfolio=PortfolioState.initial(config.risk.initial_capital),
         model=model,
@@ -123,7 +126,9 @@ def run_bar_loop(
         ts = data.index[pos]
         price = float(close.loc[ts])
         raw_pred = float(ctx.model.predict(data[feature_cols].iloc[[pos]])[0])
-        decision = ctx.risk_manager.decide(raw_pred, ctx.portfolio)
+        feat_row = data[feature_cols].iloc[pos]
+        safety = ctx.safety_scorer.assess(feat_row) if ctx.safety_scorer else None
+        decision = ctx.risk_manager.decide(raw_pred, ctx.portfolio, safety=safety)
         prev_equity = ctx.trader.equity
         ctx.trader.rebalance(str(ts), price, decision)
         period_ret = float(data["forward_return"].iloc[pos]) / config.prediction.horizon

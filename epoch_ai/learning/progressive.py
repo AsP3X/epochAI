@@ -26,6 +26,7 @@ import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.risk import RiskManager
+from epoch_ai.execution.safety import SafetyScorer
 from epoch_ai.features.pipeline import build_target, forward_return
 from epoch_ai.learning.step_metrics import classification_step_metrics, regression_step_metrics
 from epoch_ai.learning.weighting import recency_weights
@@ -62,7 +63,8 @@ class ProgressiveLearningEngine:
 
     def __init__(self, config: AppConfig, register_models: bool = False) -> None:
         self.config = config
-        self.risk_manager = RiskManager(config.risk, config.prediction)
+        self.risk_manager = RiskManager(config.risk, config.prediction, config.safety)
+        self._safety_scorer = SafetyScorer(config.safety) if config.safety.enabled else None
         self.register_models = register_models
         self.registry = ModelRegistry(config.model.model_dir) if register_models else None
 
@@ -205,7 +207,14 @@ class ProgressiveLearningEngine:
                 else:
                     realized_label = int(realized_ret > self.config.prediction.threshold)
 
-                decision = self.risk_manager.decide(float(raw_pred))
+                feat_row = x_test.iloc[offset]
+                safety_assess = (
+                    self._safety_scorer.assess(feat_row) if self._safety_scorer else None
+                )
+                decision = self.risk_manager.decide(
+                    float(raw_pred),
+                    safety=safety_assess,
+                )
                 pred_records.append(
                     {
                         "timestamp": ts,

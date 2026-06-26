@@ -29,8 +29,11 @@ operating closer to real-time.
 - **Rich, multi-source features** — technical (incl. ADX, VWAP, OBV, CCI,
   Williams %R), microstructure, derivatives (funding / open interest /
   liquidations), volatility/regime, cyclical time, plus optional sentiment
-  (Fear & Greed) and on-chain (exchange net-flow) groups — all modular,
-  toggle-able, with config-driven look-back windows.
+  (Fear & Greed), on-chain (exchange net-flow / token safety), **chart-pattern
+  geometry** (`features.patterns`), and **manipulation proxies**
+  (`features.manipulation`) — all modular, toggle-able, with config-driven
+  look-back windows. Optional **safety gate** (`safety.enabled`) blocks or scales
+  trades on suspicion scores (execution layer only).
 - **Open weights by default** — versioned models export as plain LightGBM files +
   JSON metadata (`ModelRegistry.export_open_bundle`); no encryption or load gates.
 - **Prediction + outcome logging** to SQLite (full feature vectors at prediction

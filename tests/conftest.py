@@ -32,3 +32,11 @@ def small_config() -> AppConfig:
             },
         }
     )
+
+
+@pytest.fixture
+def pattern_config(small_config: AppConfig) -> AppConfig:
+    """Config with pattern and manipulation groups enabled."""
+    small_config.features.patterns = True
+    small_config.features.manipulation = True
+    return small_config
