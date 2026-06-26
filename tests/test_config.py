@@ -146,6 +146,7 @@ def test_shipped_config_yaml_loads():
     assert config.model.calibration == "sigmoid"
     assert config.walk_forward.recency_half_life == 2000
     assert "ETH/USDT" in config.data.context_symbols
+    assert "SOL/USDT" in config.data.context_symbols
     assert config.features.cross_asset is True
     assert config.features.sentiment is True
     assert config.risk.long_threshold == 0.58
@@ -155,6 +156,7 @@ def test_shipped_config_yaml_loads():
 def test_data_enrichment_defaults():
     data = AppConfig().data
     assert "ETH/USDT" in data.context_symbols
+    assert "SOL/USDT" in data.context_symbols
     assert data.fetch_fear_greed is True
     assert data.fetch_open_interest is True
     assert data.fetch_spot_basis is True

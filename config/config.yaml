@@ -25,7 +25,8 @@ data:
   synthetic_seed: 7
   rate_limit_ms: 250
   context_symbols:
-    - "ETH/USDT"              # joined as eth_close, eth_volume, etc. for cross-asset features
+    - "ETH/USDT"              # joined as eth_* for cross-asset features
+    - "SOL/USDT"              # joined as sol_* (high-beta L1 context for BTC)
   fetch_fear_greed: true       # Crypto Fear & Greed index (Alternative.me)
   fetch_open_interest: true   # paginated OI history from the exchange
   fetch_spot_basis: true       # spot reference close for deriv_basis features
@@ -41,7 +42,7 @@ features:
   derivatives: true
   volatility: true
   time: true
-  cross_asset: true            # ETH/BTC relative strength, ratio, correlation
+  cross_asset: true            # ETH/SOL vs BTC relative strength, ratio, correlation, derivatives
   sentiment: true              # joins a `fear_greed` column when present
   onchain: false               # joins on-chain columns when present (requires external feed)
   patterns: false              # classic chart-pattern geometry (secondary)

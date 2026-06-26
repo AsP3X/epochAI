@@ -33,6 +33,7 @@ symbols: ["BTC/USDT"]
 data:
   use_synthetic_fallback: true
   data_dir: artifacts/data
+  context_symbols: []
 model:
   backend: lightgbm
   num_boost_round: 40
@@ -77,6 +78,7 @@ symbols: ["BTC/USDT"]
 data:
   use_synthetic_fallback: true
   data_dir: artifacts/data
+  context_symbols: []
 model:
   backend: lightgbm
   model_dir: artifacts/models

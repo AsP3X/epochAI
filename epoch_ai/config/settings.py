@@ -42,10 +42,10 @@ class DataConfig(BaseModel):
     synthetic_seed: int = 7
     rate_limit_ms: int = 250
     context_symbols: list[str] = Field(
-        default_factory=lambda: ["ETH/USDT"],
+        default_factory=lambda: ["ETH/USDT", "SOL/USDT"],
         description=(
             "Additional symbols whose OHLCV/derivatives are joined onto the primary "
-            "frame as context columns (e.g. eth_close for cross-asset features)."
+            "frame as context columns (e.g. eth_close, sol_funding_rate for cross-asset)."
         ),
     )
     fetch_fear_greed: bool = Field(

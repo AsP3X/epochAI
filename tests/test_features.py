@@ -107,10 +107,40 @@ def test_cross_asset_features_with_eth(market, small_config):
     enriched = market.copy()
     enriched["eth_close"] = enriched["close"] * 0.04
     enriched["eth_volume"] = enriched["volume"] * 1.5
+    enriched["eth_open"] = enriched["eth_close"] * 0.999
+    enriched["eth_high"] = enriched["eth_close"] * 1.01
+    enriched["eth_low"] = enriched["eth_close"] * 0.99
+    enriched["eth_funding_rate"] = enriched["funding_rate"] * 1.2
+    enriched["eth_open_interest"] = enriched["open_interest"] * 2.0
+    enriched["eth_liquidations"] = enriched["liquidations"] * 0.5
     features = FeaturePipeline(small_config).transform(enriched)
     assert "xasset_eth_ratio" in features.columns
     assert "xasset_eth_ret_1" in features.columns
     assert "xasset_eth_corr_48" in features.columns
+    assert "xasset_eth_funding_z" in features.columns
+    assert "xasset_eth_funding_spread" in features.columns
+    assert "xasset_eth_oi_chg" in features.columns
+    assert "xasset_eth_close_loc" in features.columns
+    assert "xasset_eth_liq_spike" in features.columns
+
+
+def test_cross_asset_features_with_eth_and_sol(market, small_config):
+    small_config.features.cross_asset = True
+    small_config.data.context_symbols = ["ETH/USDT", "SOL/USDT"]
+    enriched = market.copy()
+    enriched["eth_close"] = enriched["close"] * 0.04
+    enriched["eth_volume"] = enriched["volume"] * 1.5
+    enriched["eth_funding_rate"] = enriched["funding_rate"] * 1.1
+    enriched["eth_open_interest"] = enriched["open_interest"] * 1.8
+    enriched["sol_close"] = enriched["close"] * 0.002
+    enriched["sol_volume"] = enriched["volume"] * 3.0
+    enriched["sol_funding_rate"] = enriched["funding_rate"] * 0.8
+    enriched["sol_open_interest"] = enriched["open_interest"] * 0.6
+    features = FeaturePipeline(small_config).transform(enriched)
+    assert "xasset_eth_ratio" in features.columns
+    assert "xasset_sol_ratio" in features.columns
+    assert "xasset_sol_funding_spread" in features.columns
+    assert "xasset_sol_oi_chg_spread" in features.columns
 
 
 def test_basis_features_with_spot_close(market, small_config):

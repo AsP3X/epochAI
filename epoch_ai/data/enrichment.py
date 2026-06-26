@@ -33,6 +33,18 @@ logger = get_logger(__name__)
 
 _FNG_URL = "https://api.alternative.me/fng/?limit=0&format=json"
 _FNG_CACHE = "fear_greed.parquet"
+# Human: Mirror primary-market columns so context assets feed the same feature families.
+# Agent: JOIN causal ffill; prefixes via asset_prefix (eth_close, sol_funding_rate, …).
+_CONTEXT_JOIN_COLS = (
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "funding_rate",
+    "open_interest",
+    "liquidations",
+)
 
 
 def enrich_primary_market(
@@ -80,9 +92,8 @@ def _join_context_symbol(
         return df
 
     ctx = ctx.reindex(df.index, method="ffill")
-    join_cols = ["close", "volume", "funding_rate", "open_interest"]
     joined = 0
-    for col in join_cols:
+    for col in _CONTEXT_JOIN_COLS:
         if col in ctx.columns:
             df[f"{pfx}_{col}"] = ctx[col]
             joined += 1

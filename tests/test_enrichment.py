@@ -33,7 +33,7 @@ def test_joins_context_symbol_columns(tmp_path):
         {
             "data": {
                 "data_dir": str(tmp_path / "data"),
-                "context_symbols": ["ETH/USDT"],
+                "context_symbols": ["ETH/USDT", "SOL/USDT"],
                 "fetch_fear_greed": False,
                 "fetch_spot_basis": False,
             }
@@ -42,18 +42,31 @@ def test_joins_context_symbol_columns(tmp_path):
     btc = _btc_frame(200)
     eth = _btc_frame(200)
     eth["close"] = eth["close"] * 0.04
+    sol = _btc_frame(200)
+    sol["close"] = sol["close"] * 0.002
+    sol["open_interest"] = 1_000_000.0
+    sol["liquidations"] = 50.0
     downloader = HistoricalDownloader(config)
 
     def fake_load(symbol, **kwargs):
         del kwargs
-        return eth.copy() if symbol == "ETH/USDT" else btc.copy()
+        if symbol == "ETH/USDT":
+            return eth.copy()
+        if symbol == "SOL/USDT":
+            return sol.copy()
+        return btc.copy()
 
     with patch.object(downloader, "load_or_download", side_effect=fake_load):
         enriched = enrich_primary_market(btc, config, downloader)
 
     assert "eth_close" in enriched.columns
     assert "eth_volume" in enriched.columns
+    assert "eth_funding_rate" in enriched.columns
     assert enriched["eth_close"].iloc[-1] == eth["close"].iloc[-1]
+    assert "sol_close" in enriched.columns
+    assert "sol_open_interest" in enriched.columns
+    assert "sol_liquidations" in enriched.columns
+    assert enriched["sol_close"].iloc[-1] == sol["close"].iloc[-1]
 
 
 def test_joins_fear_greed_from_api(tmp_path):
