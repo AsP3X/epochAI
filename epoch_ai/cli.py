@@ -31,11 +31,13 @@ from pathlib import Path
 import yaml
 
 from epoch_ai.backtesting.engine import Backtester
+from epoch_ai.backtesting.reporting import format_importance_value, importance_metric_label
 from epoch_ai.config.overrides import apply_overrides, parse_set_args
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.execution.live_loop import run_bar_loop, run_scheduled_retrain
 from epoch_ai.features.pipeline import FeaturePipeline
+from epoch_ai.learning.degradation import degradation_hints
 from epoch_ai.logging_system.joiner import RetrainLogStats, retrain_log_stats
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.services.runtime import RuntimeService
@@ -119,9 +121,10 @@ def cmd_train(args: argparse.Namespace) -> int:
     print(f"Walk-forward steps: {result.walk_forward_steps}")
     print(f"Final train rows  : {result.train_rows:,}")
     if not result.feature_importance.empty:
-        print("Top features:")
-        for name, gain in result.feature_importance.head(5).items():
-            print(f"  {name:<28}{gain:>10.1f}")
+        metric = importance_metric_label(config.model.backend)
+        print(f"Top features ({metric}):")
+        for name, score in result.feature_importance.head(5).items():
+            print(f"  {name:<28}{format_importance_value(float(score)):>14}")
     if args.log_predictions:
         _print_retrain_log_summary(config, _load_retrain_log_stats(config))
     return 0
@@ -227,6 +230,10 @@ def cmd_download(args: argparse.Namespace) -> int:
 def cmd_backtest(args: argparse.Namespace) -> int:
     """Run the full progressive historical-learning backtest."""
     config = _load(args)
+    if args.long_threshold is not None:
+        config.risk.long_threshold = args.long_threshold
+    if args.short_threshold is not None:
+        config.risk.short_threshold = args.short_threshold
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -611,11 +618,13 @@ def _print_report(config: AppConfig, result, store: PredictionStore | None) -> N
     b = result.benchmark_metrics
     imp = result.learning_improvement
     curve = result.learning_curve
+    n_rebalances = int(m.get("n_rebalances", 0))
     print("\n" + "=" * 64)
     print(f"  PROGRESSIVE BACKTEST REPORT - {config.primary_symbol} {config.timeframe}")
     print("=" * 64)
     print(f"  Predictions made   : {len(result.learning.predictions):,}")
     print(f"  Walk-forward steps : {len(result.learning.step_history):,}")
+    print(f"  Position rebalances: {n_rebalances:,}")
     print("-" * 64)
     print(f"  {'Metric':<20}{'Strategy':>18}{'Buy & Hold':>18}")
     print("-" * 64)
@@ -635,19 +644,64 @@ def _print_report(config: AppConfig, result, store: PredictionStore | None) -> N
         print(f"  {label:<20}{sv:>17.3f}{unit}{bv:>17.3f}{unit}")
     print("-" * 64)
     if imp:
-        print("  Learning curve (out-of-sample directional accuracy):")
-        print(f"    first half : {imp['first_half_accuracy']:.3f}")
-        print(f"    second half: {imp['second_half_accuracy']:.3f}")
-        print(f"    delta      : {imp['delta']:+.3f}")
+        print("  Learning curve (out-of-sample, walk-forward steps):")
+        print(
+            f"    accuracy   first: {imp.get('first_half_accuracy', 0):.3f}"
+            f"  second: {imp.get('second_half_accuracy', 0):.3f}"
+            f"  delta: {imp.get('delta', 0):+.3f}"
+        )
+        if "first_half_logloss" in imp:
+            print(
+                f"    logloss    first: {imp['first_half_logloss']:.3f}"
+                f"  second: {imp['second_half_logloss']:.3f}"
+                f"  delta: {imp['logloss_delta']:+.3f}"
+            )
+        if "first_half_dir_accuracy" in imp:
+            print(
+                f"    dir_acc    first: {imp['first_half_dir_accuracy']:.3f}"
+                f"  second: {imp['second_half_dir_accuracy']:.3f}"
+                f"  delta: {imp['dir_accuracy_delta']:+.3f}"
+            )
+        if "first_half_label_rate" in imp:
+            print(
+                f"    up-label % first: {imp['first_half_label_rate']:.3f}"
+                f"  second: {imp['second_half_label_rate']:.3f}"
+                f"  delta: {imp['label_rate_delta']:+.3f}"
+            )
+        if "first_half_mean_prediction" in imp:
+            print(
+                f"    mean P(up) first: {imp['first_half_mean_prediction']:.3f}"
+                f"  second: {imp['second_half_mean_prediction']:.3f}"
+                f"  delta: {imp['mean_prediction_delta']:+.3f}"
+            )
+        if "train_rows_per_step" in imp:
+            slope = imp["train_rows_per_step"]
+            if config.walk_forward.expanding:
+                window_label = "expanding window"
+            else:
+                window_label = (
+                    f"rolling window ({config.walk_forward.initial_train_period} bars)"
+                )
+            sign = "+" if slope >= 0 else ""
+            print(f"    train_rows {sign}{slope:.0f} rows/step ({window_label})")
+        if "accuracy_train_rows_corr" in imp:
+            print(f"    acc~train_rows corr: {imp['accuracy_train_rows_corr']:+.3f}")
     if curve.get("n_steps", 0) > 0:
-        print(f"    mean OOS   : {curve.get('mean_oos_accuracy', 0):.3f}")
+        print(f"    mean OOS acc: {curve.get('mean_oos_accuracy', 0):.3f}")
         if "oos_accuracy_trend_slope" in curve:
-            print(f"    trend slope: {curve['oos_accuracy_trend_slope']:+.5f}")
-    if not result.learning.feature_importance.empty:
+            print(f"    acc trend   : {curve['oos_accuracy_trend_slope']:+.5f} / step")
+        hints = degradation_hints(imp)
+        if hints:
+            print("  Likely drivers of degradation:")
+            for hint in hints:
+                print(f"    - {hint}")
+    importance = result.learning.feature_importance
+    if not importance.empty:
+        metric = importance_metric_label(config.model.backend)
         print("-" * 64)
-        print("  Top 10 features by gain:")
-        for name, gain in result.learning.feature_importance.head(10).items():
-            print(f"    {name:<28}{gain:>14.1f}")
+        print(f"  Top 10 features ({metric}):")
+        for name, score in importance.head(10).items():
+            print(f"    {name:<28}{format_importance_value(float(score)):>14}")
     if store is not None:
         counts = store.counts()
         print("-" * 64)
@@ -754,6 +808,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_bt.add_argument("--out", default="artifacts/backtests", help="Artifact output dir.")
     p_bt.add_argument("--log-predictions", action="store_true", help="Persist to SQLite store.")
     p_bt.add_argument("--register-models", action="store_true", help="Version each model.")
+    p_bt.add_argument(
+        "--long-threshold", type=float, default=None, help="Override P(up) long entry."
+    )
+    p_bt.add_argument(
+        "--short-threshold", type=float, default=None, help="Override P(up) short entry."
+    )
     p_bt.set_defaults(func=cmd_backtest)
 
     p_pt = sub.add_parser("paper-trade", help="Simulate near-real-time paper trading.", parents=[parent])

@@ -15,9 +15,11 @@ import numpy as np
 import pandas as pd
 
 from epoch_ai.backtesting.metrics import compute_metrics
+from epoch_ai.backtesting.reporting import count_rebalances
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.learning.curve_analysis import summarize_step_history
+from epoch_ai.learning.degradation import summarize_learning_degradation
 from epoch_ai.learning.progressive import ProgressiveLearningEngine, ProgressiveResult
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.utils.logging import get_logger
@@ -120,14 +122,22 @@ class Backtester:
         benchmark_metrics = compute_metrics(benchmark, annualization=factor, periods_per_year=ppy)
         equity = (1.0 + strat).cumprod() * self.config.risk.initial_capital
 
-        improvement = self._learning_improvement(learning.step_history)
+        improvement = summarize_learning_degradation(learning.step_history)
         curve = summarize_step_history(learning.step_history)
+        n_rebalances = count_rebalances(
+            predictions["target_weight"],
+            horizon_aware=self.config.backtest.horizon_aware,
+            horizon=self.config.prediction.horizon,
+        )
+        metrics["n_rebalances"] = float(n_rebalances)
 
         logger.info(
-            "Backtest complete: Sharpe=%.2f total_return=%.2f%% max_dd=%.2f%% trades=%d",
+            "Backtest complete: Sharpe=%.2f total_return=%.2f%% max_dd=%.2f%% "
+            "rebalances=%d predictions=%d",
             metrics["sharpe"],
             metrics["total_return"] * 100,
             metrics["max_drawdown"] * 100,
+            n_rebalances,
             len(predictions),
         )
         return BacktestResult(
@@ -139,20 +149,6 @@ class Backtester:
             learning_improvement=improvement,
             learning_curve=curve,
         )
-
-    @staticmethod
-    def _learning_improvement(step_history: pd.DataFrame) -> dict[str, float]:
-        """Quantify how OOS accuracy changes from the first to the second half."""
-        if step_history.empty or "oos_accuracy" not in step_history:
-            return {}
-        half = max(1, len(step_history) // 2)
-        first = step_history["oos_accuracy"].iloc[:half].mean()
-        second = step_history["oos_accuracy"].iloc[half:].mean()
-        return {
-            "first_half_accuracy": float(first),
-            "second_half_accuracy": float(second),
-            "delta": float(second - first),
-        }
 
     def _maybe_vectorbt(self, strat: pd.Series) -> None:
         """Cross-check via vectorbt if installed (optional, best-effort)."""

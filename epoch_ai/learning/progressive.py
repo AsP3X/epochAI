@@ -285,6 +285,11 @@ class ProgressiveLearningEngine:
                             short_threshold=self.config.risk.short_threshold,
                         )
                     )
+                    # Human: Track label balance and mean P(up) per step to explain
+                    #        first-vs-second-half OOS accuracy drift in backtest reports.
+                    # Agent: WRITES test_label_rate, mean_prediction; CAUSAL step-local stats.
+                    record["test_label_rate"] = float(np.mean(step_labels))
+                    record["mean_prediction"] = float(np.mean(step_preds))
                     logger.info(
                         "Step %d | train=%d | test=%d | acc=%.3f logloss=%.4f "
                         "auc=%.3f brier=%.4f dir_acc=%.3f",

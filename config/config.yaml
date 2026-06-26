@@ -92,7 +92,7 @@ model:
   early_stopping_rounds: 30
   val_fraction: 0.15          # time-ordered tail for early stopping + calibration
   class_weight: balanced      # derive scale_pos_weight from label balance ("none" to disable)
-  calibration: isotonic       # post-hoc probability calibration: isotonic | sigmoid | none
+  calibration: sigmoid       # post-hoc probability calibration: isotonic | sigmoid | none
   refit_full_after_es: true   # after ES picks #rounds, refit on full window (keep freshest bars)
   device: cpu                 # cpu | gpu | cuda — LightGBM gpu=OpenCL, XGBoost gpu/cuda=CUDA; auto-falls back to cpu
   gpu_platform_id: -1         # OpenCL platform id for LightGBM device=gpu (-1 = auto)
@@ -120,7 +120,7 @@ walk_forward:
   step_size: 200               # candles predicted + ingested per iteration
   retrain_frequency: 1         # retrain every N steps (1 = every step)
   expanding: true              # expanding window = full accumulated history
-  recency_half_life: 4000      # decay sample weights so recent regimes matter more
+  recency_half_life: 2000      # decay sample weights so recent regimes matter more
   embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)
   max_steps: null              # cap iterations for quick demos (null = full run)
 
@@ -150,8 +150,8 @@ risk:
   initial_capital: 10000.0
   risk_per_trade: 0.02
   max_leverage: 3.0
-  long_threshold: 0.55
-  short_threshold: 0.45
+  long_threshold: 0.58        # P(up) long entry (wider band reduces churn vs 0.55)
+  short_threshold: 0.42      # P(up) short entry (paired with long_threshold)
   fee_rate: 0.0004
   slippage: 0.0002
   allow_short: true

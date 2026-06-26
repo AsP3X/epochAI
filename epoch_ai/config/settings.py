@@ -392,8 +392,8 @@ class RiskConfig(BaseModel):
     initial_capital: float = 10_000.0
     risk_per_trade: float = 0.02
     max_leverage: float = 3.0
-    long_threshold: float = 0.55
-    short_threshold: float = 0.45
+    long_threshold: float = 0.58
+    short_threshold: float = 0.42
     fee_rate: float = 0.0004
     slippage: float = 0.0002
     allow_short: bool = True

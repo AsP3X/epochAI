@@ -143,11 +143,13 @@ def test_invalid_val_fraction_rejected():
 def test_shipped_config_yaml_loads():
     """The example config must resolve with the new keys."""
     config = load_config("config/config.yaml")
-    assert config.model.calibration in {"none", "isotonic", "sigmoid"}
-    assert config.walk_forward.recency_half_life == 4000
+    assert config.model.calibration == "sigmoid"
+    assert config.walk_forward.recency_half_life == 2000
     assert "ETH/USDT" in config.data.context_symbols
     assert config.features.cross_asset is True
     assert config.features.sentiment is True
+    assert config.risk.long_threshold == 0.58
+    assert config.risk.short_threshold == 0.42
 
 
 def test_data_enrichment_defaults():

@@ -130,7 +130,7 @@ and **ask** — not commit or push on their own.
   `retrain_frequency` steps). For quick smoke runs use `--bars` and `--max-steps`
   (e.g. `python -m epoch_ai backtest --bars 8000 --max-steps 12`).
 - **Demonstrating paper-trade taking trades:** on near-random synthetic data the model
-  correctly hugs P(up)≈0.5, so default thresholds (0.55/0.45) keep it flat. Pass
+  correctly hugs P(up)≈0.5, so default thresholds (0.58/0.42) may still trade often. Pass
   `--long-threshold 0.5 --short-threshold 0.5` to force directional positions and
   exercise the execution path.
 - **Lint/test:** `.venv/bin/ruff check .` and `.venv/bin/python -m pytest` (ruff config

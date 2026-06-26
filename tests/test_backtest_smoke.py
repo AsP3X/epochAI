@@ -14,3 +14,6 @@ def test_backtest_learning_curve(market, small_config):
     assert "mean_oos_accuracy" in result.learning_curve
     if result.learning_improvement:
         assert "first_half_accuracy" in result.learning_improvement
+        assert "delta" in result.learning_improvement
+    assert "n_rebalances" in result.metrics
+    assert result.metrics["n_rebalances"] <= len(result.learning.predictions)

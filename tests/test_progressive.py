@@ -24,6 +24,7 @@ def test_progressive_run(market, small_config):
     assert {"oos_accuracy", "oos_logloss", "oos_brier", "oos_auc"}.issubset(
         result.step_history.columns
     )
+    assert {"test_label_rate", "mean_prediction"}.issubset(result.step_history.columns)
 
 
 def test_embargo_purges_label_overlap(market, small_config):
