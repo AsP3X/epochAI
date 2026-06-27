@@ -61,6 +61,11 @@ def resolve_device(config: ModelConfig):
     return torch.device("cpu")
 
 
+def _min_train_batch(genome: NNGenome) -> int:
+    """BatchNorm1d requires batch size > 1 during training."""
+    return 2 if genome.use_batch_norm else 1
+
+
 def build_mlp(input_dim: int, genome: NNGenome, *, task: str):
     """Construct a feed-forward network from ``genome``."""
     _, nn = _import_torch()
@@ -168,6 +173,7 @@ def train_genome(
     best_val = float("inf")
     best_epoch = 0
     patience_left = nn_cfg.patience
+    min_batch = _min_train_batch(genome)
 
     for epoch in range(nn_cfg.max_epochs):
         model.train()
@@ -175,6 +181,10 @@ def train_genome(
         indices = torch.randperm(n, device=device)
         for start in range(0, n, nn_cfg.batch_size):
             idx = indices[start : start + nn_cfg.batch_size]
+            # Human: val tail can leave train_rows % batch_size == 1; BatchNorm rejects N=1.
+            # Agent: SKIP batches smaller than min_batch; CAUSAL no effect at predict time.
+            if len(idx) < min_batch:
+                continue
             batch_x = x_train_t[idx]
             batch_y = y_train_t[idx]
             optimizer.zero_grad(set_to_none=True)
@@ -240,6 +250,8 @@ def train_genome(
             indices = torch.randperm(n, device=device)
             for start in range(0, n, nn_cfg.batch_size):
                 idx = indices[start : start + nn_cfg.batch_size]
+                if len(idx) < min_batch:
+                    continue
                 optimizer.zero_grad(set_to_none=True)
                 logits = model(x_full_t[idx])
                 loss_vec = criterion(logits, y_full_t[idx])

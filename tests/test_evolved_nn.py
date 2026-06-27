@@ -104,6 +104,45 @@ def test_evolution_runs_without_fast_fit(market, small_config):
     assert model.best_iteration_ is not None
 
 
+def test_train_genome_tolerates_trailing_singleton_batch():
+    """Regression: train_rows % batch_size == 1 must not crash BatchNorm1d."""
+    from epoch_ai.config.settings import ModelConfig
+    from epoch_ai.models.nn_genome import NNGenome
+    from epoch_ai.models.nn_trainer import train_genome
+
+    n_train = 18689  # 18689 % 256 == 1 with default batch_size
+    n_val = 200
+    n = n_train + n_val
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((n, 24)).astype(np.float32)
+    y = (rng.random(n) > 0.5).astype(np.float32)
+
+    config = ModelConfig(
+        backend="evolved_nn",
+        val_fraction=0.15,
+        nn={"max_epochs": 10, "patience": 1, "batch_size": 256},
+    )
+    genome = NNGenome(
+        hidden_sizes=[128],
+        dropout=0.0,
+        learning_rate=1e-3,
+        weight_decay=0.0,
+        use_batch_norm=True,
+    )
+    result = train_genome(
+        x,
+        y,
+        genome,
+        config,
+        task="classification",
+        sample_weight=None,
+        val_fraction=0.15,
+        split=n_train,
+    )
+    assert result.best_epoch >= 1
+    assert result.state_dict
+
+
 def test_model_class_lazy_import():
     cls = model_class("evolved_nn")
     assert cls.BACKEND == "evolved_nn"
