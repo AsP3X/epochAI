@@ -311,6 +311,10 @@ class WalkForwardConfig(BaseModel):
             to ``prediction.horizon`` (the correct gap); ``0`` disables purging (legacy).
         max_steps: Optional cap on the number of walk-forward steps (useful for
             quick smoke runs / demos).
+        checkpoint_enabled: When ``True``, ``train`` persists progress after each step
+            so a later run can resume with ``--resume`` (default).
+        checkpoint_path: Optional JSON checkpoint file (``null`` = per-symbol file under
+            ``artifacts/checkpoints/``).
     """
 
     initial_train_period: int = 2000
@@ -324,6 +328,11 @@ class WalkForwardConfig(BaseModel):
         description="Bars purged between train and prediction windows (None = horizon).",
     )
     max_steps: int | None = None
+    checkpoint_enabled: bool = True
+    checkpoint_path: str | None = Field(
+        default=None,
+        description="Walk-forward resume checkpoint JSON (null = default per-symbol path).",
+    )
 
 
 class PromotionConfig(BaseModel):

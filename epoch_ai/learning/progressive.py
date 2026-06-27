@@ -20,6 +20,7 @@ improves as it walks through history*.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,14 @@ from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.execution.safety import SafetyScorer
 from epoch_ai.features.pipeline import build_target, forward_return
+from epoch_ai.learning.checkpoint import (
+    build_checkpoint,
+    clear_checkpoint,
+    load_checkpoint,
+    resolve_checkpoint_path,
+    save_checkpoint,
+    validate_checkpoint,
+)
 from epoch_ai.learning.step_metrics import classification_step_metrics, regression_step_metrics
 from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
@@ -56,6 +65,7 @@ class ProgressiveResult:
     step_history: pd.DataFrame
     feature_importance: pd.Series = field(default_factory=pd.Series)
     final_model_version: str | None = None
+    resumed_from_step: int | None = None
 
 
 class ProgressiveLearningEngine:
@@ -97,12 +107,44 @@ class ProgressiveLearningEngine:
             context["max_liquidation"] = float(window["liquidations"].max())
         return context
 
+    def _persist_checkpoint(
+        self,
+        path: Path,
+        *,
+        step_idx: int,
+        cutoff: int,
+        model_version: str | None,
+        n_features: int,
+        resolved_rows: int,
+    ) -> None:
+        """Save or clear the walk-forward checkpoint after a completed step."""
+        wf = self.config.walk_forward
+        if not wf.checkpoint_enabled:
+            return
+        if cutoff >= resolved_rows:
+            clear_checkpoint(path)
+            return
+        save_checkpoint(
+            path,
+            build_checkpoint(
+                step_idx=step_idx,
+                cutoff=cutoff,
+                model_version=model_version if self.register_models else None,
+                config=self.config,
+                n_features=n_features,
+                resolved_rows=resolved_rows,
+            ),
+        )
+
     # ----------------------------------------------------------------------- run
     def run(
         self,
         market: pd.DataFrame,
         features: pd.DataFrame,
         store: PredictionStore | None = None,
+        *,
+        resume: bool = False,
+        fresh: bool = False,
     ) -> ProgressiveResult:
         """Execute the full progressive walk-forward simulation.
 
@@ -110,6 +152,8 @@ class ProgressiveLearningEngine:
             market: Cleaned OHLCV(+context) frame indexed by ``timestamp``.
             features: Engineered feature matrix (subset of ``market``'s index).
             store: Optional log store; predictions/outcomes are persisted if given.
+            resume: When ``True`` and a checkpoint exists, continue from the saved step.
+            fresh: Delete any checkpoint before starting (always begins at step 0).
 
         Returns:
             A :class:`ProgressiveResult`.
@@ -145,13 +189,61 @@ class ProgressiveLearningEngine:
         fwd_all = data["forward_return"]
         ts_all = data.index
 
+        checkpoint_path = resolve_checkpoint_path(self.config)
+        if fresh:
+            clear_checkpoint(checkpoint_path)
+
         model: BaseModel | None = None
         model_version = "untrained"
         pred_records: list[dict] = []
         step_records: list[dict] = []
+        resumed_from_step: int | None = None
 
         cutoff = wf.initial_train_period
         step_idx = 0
+        if resume and wf.checkpoint_enabled:
+            state = load_checkpoint(checkpoint_path)
+            if state is not None:
+                if state.completed:
+                    clear_checkpoint(checkpoint_path)
+                else:
+                    validate_checkpoint(
+                        state,
+                        self.config,
+                        len(feature_cols),
+                        n,
+                    )
+                    step_idx = state.step_idx
+                    cutoff = state.cutoff
+                    resumed_from_step = step_idx
+                    if state.model_version and self.registry is not None:
+                        try:
+                            model, _ = self.registry.load(
+                                state.model_version,
+                                self.config.model,
+                                task=self.config.prediction.task,
+                            )
+                            model_version = state.model_version
+                        except FileNotFoundError:
+                            logger.warning(
+                                "Checkpoint model %s missing from registry; will retrain.",
+                                state.model_version,
+                            )
+                            model = None
+                    elif state.model_version:
+                        logger.warning(
+                            "Checkpoint references model %s but register_models=False; "
+                            "will retrain.",
+                            state.model_version,
+                        )
+                    logger.info(
+                        "Resuming walk-forward from step %d (cutoff=%d, rows=%d, model=%s).",
+                        step_idx,
+                        cutoff,
+                        n,
+                        model_version,
+                    )
+
         while cutoff < n:
             if wf.max_steps is not None and step_idx >= wf.max_steps:
                 break
@@ -320,8 +412,30 @@ class ProgressiveLearningEngine:
 
             cutoff = test_end
             step_idx += 1
+            registry_version = model_version if self.register_models else None
+            self._persist_checkpoint(
+                checkpoint_path,
+                step_idx=step_idx,
+                cutoff=cutoff,
+                model_version=registry_version,
+                n_features=len(feature_cols),
+                resolved_rows=n,
+            )
 
-        predictions = pd.DataFrame(pred_records).set_index("timestamp")
+        if pred_records:
+            predictions = pd.DataFrame(pred_records).set_index("timestamp")
+        else:
+            predictions = pd.DataFrame(
+                columns=[
+                    "prediction",
+                    "confidence",
+                    "signal",
+                    "target_weight",
+                    "forward_return",
+                    "realized_label",
+                    "model_version",
+                ]
+            )
         step_history = pd.DataFrame(step_records)
         importance = model.feature_importance() if model is not None else pd.Series(dtype=float)
         final_version = model_version if self.register_models else None
@@ -330,4 +444,5 @@ class ProgressiveLearningEngine:
             step_history=step_history,
             feature_importance=importance,
             final_model_version=final_version,
+            resumed_from_step=resumed_from_step,
         )

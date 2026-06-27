@@ -124,6 +124,8 @@ walk_forward:
   recency_half_life: 2000      # decay sample weights so recent regimes matter more
   embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)
   max_steps: null              # cap iterations for quick demos (null = full run)
+  checkpoint_enabled: true     # save progress each step; `train --resume` continues
+  checkpoint_path: null        # null = artifacts/checkpoints/walk_forward_<symbol>.json
 
 # -----------------------------------------------------------------------------
 # Automated retraining gate: `auto-retrain` (and `schedule-retrain --promote`)

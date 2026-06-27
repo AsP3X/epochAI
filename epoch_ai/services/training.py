@@ -23,6 +23,9 @@ from epoch_ai.learning.retrain_job import RetrainResult, run_retrain
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.tracking.mlflow_tracker import MLflowTracker
+from epoch_ai.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -34,6 +37,7 @@ class TrainResult:
     walk_forward_steps: int
     step_history: pd.DataFrame
     feature_importance: pd.Series = field(default_factory=pd.Series)
+    resumed_from_step: int | None = None
 
 
 class TrainingService:
@@ -72,11 +76,17 @@ class TrainingService:
         max_steps: int | None = None,
         log_predictions: bool = False,
         register: bool = True,
+        resume: bool = True,
+        fresh: bool = False,
     ) -> TrainResult:
         """Run progressive walk-forward training and register the final model.
 
         This is the primary **train-the-AI** operation: walk forward through history,
         learn from realised outcomes, and persist a versioned model to the registry.
+
+        When ``walk_forward.checkpoint_enabled`` is true (default), progress is saved
+        after each step. A later call with ``resume=True`` continues from the checkpoint.
+        Pass ``fresh=True`` to discard saved progress and start from step 0.
         """
         cfg = self._training_data_config().model_copy(deep=True)
         if max_steps is not None:
@@ -88,12 +98,29 @@ class TrainingService:
 
         try:
             engine = ProgressiveLearningEngine(cfg, register_models=register)
-            learning = engine.run(market, features, store=store)
+            learning = engine.run(
+                market,
+                features,
+                store=store,
+                resume=resume,
+                fresh=fresh,
+            )
+        except KeyboardInterrupt:
+            logger.info(
+                "Walk-forward training interrupted; last completed step checkpoint is preserved."
+            )
+            raise
         finally:
             if store is not None:
                 store.close()
 
         if learning.step_history.empty:
+            if learning.resumed_from_step is not None and max_steps is not None:
+                raise RuntimeError(
+                    "Training produced no new walk-forward steps; checkpoint step "
+                    f"{learning.resumed_from_step} may have reached --max-steps. "
+                    "Increase --max-steps or omit it to continue."
+                )
             raise RuntimeError("Training produced no walk-forward steps; increase --bars.")
 
         train_rows = int(learning.step_history["train_rows"].iloc[-1])
@@ -103,6 +130,7 @@ class TrainingService:
             walk_forward_steps=len(learning.step_history),
             step_history=learning.step_history,
             feature_importance=learning.feature_importance,
+            resumed_from_step=learning.resumed_from_step,
         )
 
     def backtest(

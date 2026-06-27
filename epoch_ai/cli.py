@@ -17,6 +17,7 @@ Sub-commands:
 * ``telegram``     - start the optional Telegram bot.
 * ``kill-switch``  - halt or resume live trading globally.
 * ``schedule-retrain`` - periodic retrain loop.
+* ``checkpoint``     - seed a walk-forward resume file after a manual stop.
 * ``info``         - print the resolved configuration.
 
 Run ``python -m epoch_ai <command> --help`` for details.
@@ -37,6 +38,7 @@ from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.execution.live_loop import run_bar_loop, run_scheduled_retrain
 from epoch_ai.features.pipeline import FeaturePipeline
+from epoch_ai.learning.checkpoint import seed_checkpoint_from_last_step
 from epoch_ai.learning.degradation import degradation_hints
 from epoch_ai.logging_system.joiner import RetrainLogStats, retrain_log_stats
 from epoch_ai.logging_system.store import PredictionStore
@@ -104,21 +106,59 @@ def _load(args: argparse.Namespace) -> AppConfig:
     return config
 
 
+def _print_train_interrupted(config: AppConfig) -> None:
+    """User-facing summary when ``train`` is stopped with Ctrl+C."""
+    from epoch_ai.learning.checkpoint import load_checkpoint, resolve_checkpoint_path
+
+    print("\n=== Training interrupted ===")
+    wf = config.walk_forward
+    if not wf.checkpoint_enabled:
+        print("Checkpoints are disabled; only fully completed steps are persisted elsewhere.")
+        return
+
+    path = resolve_checkpoint_path(config)
+    state = load_checkpoint(path)
+    if state is None or state.completed:
+        print("No resume checkpoint on disk.")
+        print("If you stopped mid-step, seed one from the last log line:")
+        print("  python -m epoch_ai checkpoint seed --last-step <N>")
+        return
+
+    print(f"Progress saved at step {state.step_idx} (cutoff={state.cutoff}).")
+    if state.model_version:
+        print(f"Model checkpoint     : {state.model_version}")
+    print(f"Checkpoint file        : {path}")
+    print("\nResume with:")
+    print("  python -m epoch_ai train --log-predictions --set model.device=cuda")
+
+
 # --------------------------------------------------------------------- commands
 def cmd_train(args: argparse.Namespace) -> int:
     """Train the AI via progressive walk-forward learning and register the model."""
     config = _load(args)
     service = TrainingService(config)
-    result = service.train(
-        n_bars=args.bars,
-        max_steps=args.max_steps,
-        log_predictions=args.log_predictions,
-        register=not args.no_register,
-    )
+    try:
+        result = service.train(
+            n_bars=args.bars,
+            max_steps=args.max_steps,
+            log_predictions=args.log_predictions,
+            register=not args.no_register,
+            resume=not args.no_resume,
+            fresh=args.fresh,
+        )
+    except KeyboardInterrupt:
+        logger.info("Training interrupted by user.")
+        _print_train_interrupted(config)
+        return 130
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
     print("\n=== Training complete ===")
     print(f"Symbol            : {config.primary_symbol}")
     print(f"Model version     : {result.model_version or '(not registered)'}")
     print(f"Walk-forward steps: {result.walk_forward_steps}")
+    if result.resumed_from_step is not None:
+        print(f"Resumed from step : {result.resumed_from_step}")
     print(f"Final train rows  : {result.train_rows:,}")
     if not result.feature_importance.empty:
         metric = importance_metric_label(config.model.backend)
@@ -127,6 +167,30 @@ def cmd_train(args: argparse.Namespace) -> int:
             print(f"  {name:<28}{format_importance_value(float(score)):>14}")
     if args.log_predictions:
         _print_retrain_log_summary(config, _load_retrain_log_stats(config))
+    return 0
+
+
+def cmd_checkpoint_seed(args: argparse.Namespace) -> int:
+    """Seed a walk-forward checkpoint from the last completed log step."""
+    from epoch_ai.learning.checkpoint import resolve_checkpoint_path
+
+    config = _load(args)
+    state = seed_checkpoint_from_last_step(
+        config,
+        args.last_step,
+        model_version=args.model_version,
+        n_bars=args.bars,
+    )
+    path = resolve_checkpoint_path(config)
+    print(f"Checkpoint written: {path}")
+    print(f"  last completed step : {args.last_step}")
+    print(f"  resume at step      : {state.step_idx}")
+    print(f"  cutoff              : {state.cutoff}")
+    print(f"  model_version       : {state.model_version}")
+    print(f"  resolved_rows       : {state.resolved_rows}")
+    print(f"  fingerprint         : {state.fingerprint}")
+    print("\nResume with:")
+    print("  python -m epoch_ai train --log-predictions --set model.device=cuda")
     return 0
 
 
@@ -745,6 +809,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip writing models to the registry.",
     )
+    p_train.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore any saved checkpoint and start at step 0 (does not delete it).",
+    )
+    p_train.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Delete the walk-forward checkpoint and start training from step 0.",
+    )
     p_train.set_defaults(func=cmd_train)
 
     p_run = sub.add_parser(
@@ -953,6 +1027,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the challenger/champion gate each cycle (promote only if better).",
     )
     p_sched.set_defaults(func=cmd_schedule_retrain)
+
+    p_ckpt = sub.add_parser(
+        "checkpoint",
+        help="Manage walk-forward training checkpoints.",
+        parents=[parent],
+    )
+    p_ckpt_sub = p_ckpt.add_subparsers(dest="checkpoint_cmd", required=True)
+    p_ckpt_seed = p_ckpt_sub.add_parser(
+        "seed",
+        help="Create a resume checkpoint after stopping an old train run.",
+        parents=[parent],
+    )
+    p_ckpt_seed.add_argument(
+        "--last-step",
+        type=int,
+        required=True,
+        help="Last completed walk-forward step from logs (e.g. 75 for 'Step 75 | ...').",
+    )
+    p_ckpt_seed.add_argument(
+        "--model-version",
+        default=None,
+        help="Registry label (default: v_{last_step+1}, e.g. v_76 after step 75).",
+    )
+    p_ckpt_seed.add_argument("--bars", type=int, default=None, help="Optional bar cap.")
+    p_ckpt_seed.set_defaults(func=cmd_checkpoint_seed)
 
     return parser
 
