@@ -100,6 +100,7 @@ def run_retrain(
                 "train_rows": len(x),
                 "symbol": config.primary_symbol,
             },
+            retain_versions=config.model.retain_versions,
         )
 
     logger.info("Retrain complete (%s): %d rows -> %s", source, len(x), version or "memory-only")

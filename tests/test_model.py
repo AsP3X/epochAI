@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 
 from epoch_ai.features.pipeline import FeaturePipeline, build_target
 from epoch_ai.models.calibration import ProbabilityCalibrator
 from epoch_ai.models.lightgbm_model import LightGBMModel
+from epoch_ai.models.registry import ModelRegistry
 
 
 def _xy(market, config):
@@ -169,3 +173,61 @@ def test_calibrator_none_when_single_class():
     raw = np.linspace(0, 1, 100)
     labels = np.ones(100, dtype=int)
     assert ProbabilityCalibrator.fit(raw, labels, "isotonic") is None
+
+
+def _stub_version_dir(base: Path, version: int) -> None:
+    """Create a minimal registry version directory for prune tests."""
+    label = f"v_{version}"
+    version_dir = base / label
+    version_dir.mkdir(parents=True, exist_ok=True)
+    (version_dir / "model.txt").write_text("stub", encoding="utf-8")
+    (version_dir / "metadata.json").write_text(
+        json.dumps({"label": label, "backend": "lightgbm", "model_file": "model.txt"}),
+        encoding="utf-8",
+    )
+
+
+def test_registry_prune_keeps_latest_ten(tmp_path):
+    model_dir = tmp_path / "models"
+    registry = ModelRegistry(str(model_dir))
+    for version in range(1, 16):
+        _stub_version_dir(model_dir, version)
+
+    removed = registry.prune_old_versions(keep=10)
+    assert removed == [f"v_{i}" for i in range(1, 6)]
+    remaining = registry._sorted_version_labels()
+    assert remaining == [f"v_{i}" for i in range(6, 16)]
+
+
+def test_registry_prune_never_deletes_protected(tmp_path):
+    model_dir = tmp_path / "models"
+    registry = ModelRegistry(str(model_dir))
+    for version in range(1, 16):
+        _stub_version_dir(model_dir, version)
+    registry.set_promoted("v_3")
+
+    registry.prune_old_versions(keep=10, protect={"v_4"})
+    remaining = set(registry._sorted_version_labels())
+    assert "v_3" in remaining
+    assert "v_4" in remaining
+    assert "v_15" in remaining
+    assert "v_1" not in remaining
+    assert "v_2" not in remaining
+
+
+def test_registry_save_auto_prunes(market, small_config, tmp_path):
+    small_config.model.model_dir = str(tmp_path / "models")
+    small_config.model.retain_versions = 3
+    x, y = _xy(market, small_config)
+    registry = ModelRegistry(small_config.model.model_dir)
+    labels = []
+    for end in (1200, 1400, 1600, 1800, 2000):
+        model = LightGBMModel(small_config.model, task="classification")
+        model.fit(x.iloc[:end], y.iloc[:end])
+        labels.append(
+            registry.save(model, retain_versions=small_config.model.retain_versions)
+        )
+
+    remaining = registry._sorted_version_labels()
+    assert len(remaining) == 3
+    assert remaining == labels[-3:]

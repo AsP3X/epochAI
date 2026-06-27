@@ -98,6 +98,7 @@ model:
   device: cpu                 # cpu | gpu | cuda — LightGBM gpu=OpenCL, XGBoost gpu/cuda=CUDA; auto-falls back to cpu
   gpu_platform_id: -1         # OpenCL platform id for LightGBM device=gpu (-1 = auto)
   gpu_device_id: -1           # OpenCL/CUDA device ordinal (-1 = auto; pin a GPU on multi-GPU hosts)
+  retain_versions: 10         # auto-delete older v_* dirs during train (null = keep all)
   params:
     learning_rate: 0.03
     num_leaves: 63

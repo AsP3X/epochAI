@@ -20,8 +20,14 @@ Use an **expanding-window walk-forward** loop in `epoch_ai/learning/progressive.
 4. Retrain every `retrain_frequency` steps on accumulated history.
 5. Advance until history is exhausted or `max_steps` is reached.
 
+After each step, `train` persists a **resume checkpoint**
+(`artifacts/checkpoints/walk_forward_<symbol>.json`) and optionally **prunes** older
+registry versions (`model.retain_versions`, default 10). Ctrl+C stops gracefully; the
+next `train` continues from the checkpoint when config matches.
+
 ## Consequences
 
 - Honest OOS metrics per step (`step_history`, learning curve artifacts).
 - Runtime scales with steps × retrains — use `--max-steps` for smokes.
+- Long full-history runs can be paused and resumed without redoing completed steps.
 - All features must remain **causal** (`ml-causality.mdc`).

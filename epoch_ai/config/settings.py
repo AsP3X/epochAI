@@ -239,6 +239,10 @@ class ModelConfig(BaseModel):
         device: ``"cpu"`` (default), ``"gpu"`` or ``"cuda"`` for PyTorch/XGBoost.
         gpu_platform_id: OpenCL platform id for LightGBM ``device="gpu"`` (``-1`` = auto).
         gpu_device_id: OpenCL/CUDA device ordinal (``-1`` = auto).
+        retain_versions: When set, prune oldest ``v_*`` directories after each
+            :meth:`ModelRegistry.save`, keeping this many recent versions (plus any
+            protected labels such as the champion or walk-forward checkpoint model).
+            ``None`` disables automatic pruning.
     """
 
     model_dir: str = "artifacts/models"
@@ -273,6 +277,14 @@ class ModelConfig(BaseModel):
     gpu_device_id: int = Field(
         default=-1,
         description="OpenCL/CUDA device id (-1 = auto).",
+    )
+    retain_versions: int | None = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Auto-prune registry to this many recent v_* versions after each save "
+            "(champion and checkpoint models are always kept). None disables pruning."
+        ),
     )
     params: dict[str, Any] = Field(
         default_factory=lambda: {

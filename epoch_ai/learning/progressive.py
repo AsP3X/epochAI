@@ -266,6 +266,11 @@ class ProgressiveLearningEngine:
                 model = build_model(self.config.model, task=self.config.prediction.task)
                 model.fit(x_train, y_train, sample_weight=weights)
                 if self.registry is not None:
+                    protect_labels: set[str] = set()
+                    if wf.checkpoint_enabled:
+                        ckpt = load_checkpoint(checkpoint_path)
+                        if ckpt is not None and ckpt.model_version:
+                            protect_labels.add(ckpt.model_version)
                     model_version = self.registry.save(
                         model,
                         metadata={
@@ -274,6 +279,8 @@ class ProgressiveLearningEngine:
                             "train_rows": len(x_train),
                             "step": step_idx,
                         },
+                        retain_versions=self.config.model.retain_versions,
+                        protect=protect_labels,
                     )
                 else:
                     model_version = f"step_{step_idx}"

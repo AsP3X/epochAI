@@ -56,7 +56,7 @@ epoch_ai/
 ├── features/          # modular feature groups + pipeline + target builder
 ├── models/            # LightGBM wrapper, base interface, versioned registry
 ├── logging_system/    # SQLite prediction/outcome store + joiner
-├── learning/          # ★ progressive walk-forward engine (the core)
+├── learning/          # ★ progressive walk-forward engine, checkpoints, promotion
 ├── backtesting/       # backtester + trading metrics
 ├── execution/         # risk manager + paper trader (separate from prediction)
 ├── tracking/          # optional MLflow wrapper
@@ -159,7 +159,9 @@ Walk-forward steps: 70
 Final train rows  : 14,000
 ```
 
-Models are saved under `artifacts/models/v_<timestamp>/` (open weights + metadata).
+Models are saved under `artifacts/models/v_*/` (open weights + metadata). During long
+walk-forward runs the registry **auto-prunes** to the newest versions (see
+[Pause, resume, and registry cleanup](#pause-resume-and-registry-cleanup)).
 
 | Flag | Purpose |
 | --- | --- |
@@ -167,7 +169,72 @@ Models are saved under `artifacts/models/v_<timestamp>/` (open weights + metadat
 | `--max-steps N` | Limit walk-forward iterations (quick demos) |
 | `--log-predictions` | Log each OOS prediction + outcome to SQLite for retrain |
 | `--no-register` | Walk forward without writing to the registry |
+| `--no-resume` | Start at step 0 but leave any checkpoint file on disk |
+| `--fresh` | Delete the walk-forward checkpoint and restart from step 0 |
 | `--set key=value` | Dotted config override (repeatable) |
+
+### Pause, resume, and registry cleanup
+
+Full-history training can take hours or days. Walk-forward **checkpoints** let you stop
+and continue without redoing completed steps.
+
+**Pause:** press `Ctrl+C` after a `Step N | train=...` line finishes (or anytime — the
+last *completed* step is saved). You get a short summary instead of a traceback:
+
+```text
+=== Training interrupted ===
+Progress saved at step 78 (cutoff=17600).
+Model checkpoint     : v_79
+Checkpoint file        : artifacts/checkpoints/walk_forward_BTC-USDT.json
+```
+
+**Resume:** run the same `train` command again (resume is on by default):
+
+```bash
+python -m epoch_ai train --log-predictions --set model.device=cuda
+```
+
+Look for `Resuming walk-forward from step …` in the logs.
+
+**Start over:** discard saved progress:
+
+```bash
+python -m epoch_ai train --fresh --log-predictions
+```
+
+**Migrating an old run** (trained before checkpoints existed): after stopping on a
+completed step line, seed a checkpoint using the same config file as `train`:
+
+```bash
+python -m epoch_ai checkpoint seed --last-step 75
+python -m epoch_ai train --log-predictions
+```
+
+Use the number from the last `Step N | …` log line; resume continues at step `N+1` with
+model `v_{N+1}`.
+
+**Registry disk usage:** each walk-forward step registers a new `v_*` directory. By
+default only the **10 newest** versions are kept (`model.retain_versions: 10`). The
+**champion** (`artifacts/models/current.json`), the **walk-forward checkpoint** model,
+and the version just saved are never deleted even if they fall outside that window.
+Disable pruning with `model.retain_versions: null`.
+
+| Path | Purpose |
+| --- | --- |
+| `artifacts/checkpoints/walk_forward_<symbol>.json` | Resume pointer (step, cutoff, model) |
+| `artifacts/models/v_*/` | Versioned open-weights snapshots |
+| `artifacts/models/current.json` | Promoted champion for `run` / `auto-retrain` |
+
+Config knobs (also in [Progressive learning parameters](#progressive-learning-parameters-configconfigyaml)):
+
+```yaml
+walk_forward:
+  checkpoint_enabled: true     # save after each step (default)
+  checkpoint_path: null        # null = per-symbol file under artifacts/checkpoints/
+
+model:
+  retain_versions: 10          # prune older v_* after each save; null = keep all
+```
 
 ### 4. Repeat to improve the model
 
@@ -368,6 +435,8 @@ walk_forward:
   recency_half_life: 4000      # decay sample weights toward recent regimes (null = off)
   embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)
   max_steps: null              # cap iterations for quick demos
+  checkpoint_enabled: true     # persist resume state after each step
+  checkpoint_path: null        # null = artifacts/checkpoints/walk_forward_<symbol>.json
 ```
 
 The same engine powers both the **backtest simulation** and a **live retraining job**:
@@ -393,6 +462,7 @@ model:
   device: cpu                  # cpu | gpu | cuda — auto-falls back to cpu if unavailable
   gpu_platform_id: -1          # OpenCL platform id for LightGBM device=gpu (-1 = auto)
   gpu_device_id: -1            # OpenCL/CUDA device ordinal (-1 = auto)
+  retain_versions: 10          # auto-delete oldest v_* after each save; null = keep all
   params:
     lambda_l1: 0.1             # mild regularisation (was 0.0)
     lambda_l2: 1.0

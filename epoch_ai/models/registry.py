@@ -8,6 +8,8 @@ count). This gives reproducible, inspectable lineage without external infrastruc
 from __future__ import annotations
 
 import json
+import shutil
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -95,7 +97,63 @@ class ModelRegistry:
         ]
         return (max(versions) + 1) if versions else 1
 
-    def save(self, model: BaseModel, metadata: dict[str, Any] | None = None) -> str:
+    def _sorted_version_labels(self) -> list[str]:
+        """Return ``v_*`` labels sorted by numeric version (oldest first)."""
+        versions = sorted(
+            int(p.name.split("_")[-1])
+            for p in self.base_dir.glob("v_*")
+            if p.name.split("_")[-1].isdigit()
+        )
+        return [f"v_{n}" for n in versions]
+
+    def prune_old_versions(
+        self,
+        *,
+        keep: int,
+        protect: Iterable[str] | None = None,
+    ) -> list[str]:
+        """Delete oldest registry versions until only ``keep`` recent ones remain.
+
+        Labels in ``protect`` (and the promoted champion) are never removed even when
+        they fall outside the newest ``keep`` window.
+        """
+        if keep < 1:
+            return []
+
+        labels = self._sorted_version_labels()
+        if len(labels) <= keep:
+            return []
+
+        protected = {label for label in (protect or []) if label}
+        promoted = self.promoted_label()
+        if promoted:
+            protected.add(promoted)
+
+        must_keep = set(labels[-keep:]) | protected
+        removed: list[str] = []
+        for label in labels:
+            if label in must_keep:
+                continue
+            version_dir = self.base_dir / label
+            if version_dir.is_dir():
+                shutil.rmtree(version_dir)
+                removed.append(label)
+                logger.info(
+                    "Pruned registry model %s (retain_versions=%d, kept %d).",
+                    label,
+                    keep,
+                    len(must_keep),
+                )
+        return removed
+
+    def save(
+        self,
+        model: BaseModel,
+        metadata: dict[str, Any] | None = None,
+        *,
+        retain_versions: int | None = None,
+        protect: Iterable[str] | None = None,
+    ) -> str:
         """Save ``model`` as a new version and return its version label."""
         version = self._next_version()
         label = f"v_{version}"
@@ -119,6 +177,11 @@ class ModelRegistry:
         }
         (version_dir / "metadata.json").write_text(json.dumps(meta, indent=2, default=str))
         logger.info("Registered model %s (%d features).", label, meta["n_features"])
+        if retain_versions is not None and retain_versions > 0:
+            self.prune_old_versions(
+                keep=retain_versions,
+                protect=frozenset(protect or ()) | {label},
+            )
         return label
 
     def latest_label(self) -> str | None:

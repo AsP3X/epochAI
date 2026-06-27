@@ -228,6 +228,8 @@ def auto_retrain_and_promote(
             "eval_value": challenger_value,
             "eval_metrics": challenger_metrics,
         },
+        retain_versions=config.model.retain_versions,
+        protect=frozenset({champion_label}) if champion_label else None,
     )
 
     champion_metrics: dict[str, float] = {}
