@@ -196,6 +196,19 @@ python -m epoch_ai train --log-predictions --set model.device=cuda
 
 Look for `Resuming walk-forward from step …` in the logs.
 
+**Check progress** (no training, reads checkpoint + optional SQLite logs):
+
+```bash
+python -m epoch_ai progress
+python -m epoch_ai progress --watch              # live-updating TUI (Ctrl+C to exit)
+python -m epoch_ai progress --watch --interval 5 # refresh every 5 seconds
+# or: python -m epoch_ai checkpoint status --watch
+```
+
+Shows completed/total steps, percent done, steps remaining, cutoff, checkpoint model,
+registry version count, and logged OOS accuracy when `--log-predictions` was used.
+Use `--refresh-rows` to recompute the resolved row count from cached parquet.
+
 **Start over:** discard saved progress:
 
 ```bash

@@ -17,7 +17,8 @@ Sub-commands:
 * ``telegram``     - start the optional Telegram bot.
 * ``kill-switch``  - halt or resume live trading globally.
 * ``schedule-retrain`` - periodic retrain loop.
-* ``checkpoint``     - seed a walk-forward resume file after a manual stop.
+* ``checkpoint``     - seed or inspect walk-forward resume state.
+* ``progress``       - show walk-forward position and steps remaining.
 * ``info``         - print the resolved configuration.
 
 Run ``python -m epoch_ai <command> --help`` for details.
@@ -191,6 +192,31 @@ def cmd_checkpoint_seed(args: argparse.Namespace) -> int:
     print(f"  fingerprint         : {state.fingerprint}")
     print("\nResume with:")
     print("  python -m epoch_ai train --log-predictions --set model.device=cuda")
+    return 0
+
+
+def cmd_progress(args: argparse.Namespace) -> int:
+    """Print walk-forward training position without running inference."""
+    from epoch_ai.learning.progress_report import (
+        format_training_progress,
+        gather_training_progress,
+        watch_training_progress,
+    )
+
+    config = _load(args)
+    if args.watch:
+        return watch_training_progress(
+            config,
+            interval=args.interval,
+            n_bars=args.bars,
+            refresh_rows=args.refresh_rows,
+        )
+    report = gather_training_progress(
+        config,
+        n_bars=args.bars,
+        refresh_rows=args.refresh_rows,
+    )
+    print(format_training_progress(report))
     return 0
 
 
@@ -784,6 +810,21 @@ def _add_set_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_progress_watch_arguments(parser: argparse.ArgumentParser) -> None:
+    """Shared flags for ``progress`` and ``checkpoint status``."""
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Stay open and refresh the display until Ctrl+C.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=2.0,
+        help="Refresh interval in seconds when using --watch (default: 2).",
+    )
+
+
 # ------------------------------------------------------------------------ parser
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser for all sub-commands."""
@@ -1052,6 +1093,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ckpt_seed.add_argument("--bars", type=int, default=None, help="Optional bar cap.")
     p_ckpt_seed.set_defaults(func=cmd_checkpoint_seed)
+    p_ckpt_status = p_ckpt_sub.add_parser(
+        "status",
+        help="Show walk-forward progress from the checkpoint (alias for progress).",
+        parents=[parent],
+    )
+    p_ckpt_status.add_argument(
+        "--bars",
+        type=int,
+        default=None,
+        help="Optional bar cap when recomputing resolved rows.",
+    )
+    p_ckpt_status.add_argument(
+        "--refresh-rows",
+        action="store_true",
+        help="Recount resolved rows from cached data (slower, verifies row total).",
+    )
+    p_ckpt_status.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Cap total steps (same as train --max-steps).",
+    )
+    _add_progress_watch_arguments(p_ckpt_status)
+    p_ckpt_status.set_defaults(func=cmd_progress)
+
+    p_progress = sub.add_parser(
+        "progress",
+        help="Show walk-forward training position and steps remaining.",
+        parents=[parent],
+    )
+    p_progress.add_argument(
+        "--bars",
+        type=int,
+        default=None,
+        help="Optional bar cap when recomputing resolved rows.",
+    )
+    p_progress.add_argument(
+        "--refresh-rows",
+        action="store_true",
+        help="Recount resolved rows from cached data (slower, verifies row total).",
+    )
+    p_progress.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Cap total steps (same as train --max-steps).",
+    )
+    _add_progress_watch_arguments(p_progress)
+    p_progress.set_defaults(func=cmd_progress)
 
     return parser
 

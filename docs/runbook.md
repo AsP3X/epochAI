@@ -48,6 +48,21 @@ Use `config/config.yaml` (or the same `--config` / `--set` overrides as `train`)
 seeding — the fingerprint must match the training config (feature count, walk-forward
 params).
 
+### Check progress
+
+Without starting training:
+
+```bash
+python -m epoch_ai progress
+python -m epoch_ai progress --watch --interval 2
+# alias:
+python -m epoch_ai checkpoint status --watch
+```
+
+Reports completed/total walk-forward steps, percent done, steps remaining, checkpoint
+cutoff/model, registry version count, and SQLite OOS accuracy when predictions were logged.
+Add `--refresh-rows` to recompute resolved row count from cached parquet.
+
 ## Run (paper / simulated live feed)
 
 ```bash

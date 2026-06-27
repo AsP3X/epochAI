@@ -47,6 +47,7 @@ Future Telegram/website interfaces must call these services — see
 | Command | Purpose |
 | --- | --- |
 | `train` | Train AI + register model (primary training entry); auto-resumes from checkpoint |
+| `progress` / `checkpoint status` | Show walk-forward position; `--watch` for live TUI |
 | `checkpoint seed --last-step N` | Create a resume file after stopping a pre-checkpoint train |
 | `run` | Load registry model + paper/replay session |
 | `tune --sweep config/sweeps/example.yaml` | YAML hyperparameter sweep |

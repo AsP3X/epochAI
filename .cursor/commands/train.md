@@ -10,6 +10,10 @@ python -m epoch_ai train --bars 4000 --max-steps 5   # fast smoke
 **Pause / resume:** `Ctrl+C` after a completed step, then run the same `train` command again.
 Use `train --fresh` to discard the checkpoint and restart from step 0.
 
+**Progress:** `python -m epoch_ai progress` (or `checkpoint status`) — steps done/remaining
+without running training. Add `--watch` for a live-updating display while training runs
+in another terminal.
+
 **Seed checkpoint** (runs that pre-date auto-checkpointing):
 
 ```bash

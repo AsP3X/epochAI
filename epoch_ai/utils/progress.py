@@ -164,15 +164,6 @@ class DownloadProgressBar:
     def update(self, n: int = 1) -> None:
         self.advance_to(self.current + n)
 
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self.enabled:
-            self._render(force=True)
-            self._stream.write("\n")
-            self._stream.flush()
-
     def _effective_rate(self) -> float:
         if self._recent_rates:
             return sum(self._recent_rates) / len(self._recent_rates)
@@ -226,3 +217,47 @@ class DownloadProgressBar:
         else:
             self._stream.write("\r" + line.ljust(min(len(line), cols - 1)))
         self._stream.flush()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self.enabled:
+            self._render(force=True)
+            self._stream.write("\n")
+            self._stream.flush()
+
+
+def render_live_text(text: str, *, stream=None) -> None:
+    """Redraw ``text`` in-place on a TTY (full screen clear each frame)."""
+    if stream is None:
+        stream = sys.stdout
+    if not stream.isatty():
+        stream.write(text)
+        if not text.endswith("\n"):
+            stream.write("\n")
+        stream.write("\n")
+        stream.flush()
+        return
+
+    _enable_vt_on_windows()
+    # Agent: full erase every frame; partial clear (H+J) left stale lines on Windows.
+    stream.write("\x1b[2J\x1b[H")
+    stream.write(text.rstrip("\n"))
+    stream.write("\x1b[J\n")
+    stream.flush()
+
+
+def build_fraction_bar(completed: int, total: int, width: int = 30) -> str:
+    """Return an ASCII progress bar for ``completed`` of ``total``."""
+    if total <= 0:
+        return "[" + " " * width + "]"
+    pct = min(1.0, max(0.0, completed / total))
+    filled = int(width * pct)
+    if filled >= width:
+        inner = "=" * width
+    elif filled <= 0:
+        inner = ">" + " " * (width - 1)
+    else:
+        inner = "=" * filled + ">" + " " * (width - filled - 1)
+    return f"[{inner}]"
