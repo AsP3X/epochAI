@@ -20,7 +20,11 @@ from sklearn.metrics import log_loss, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 
 from epoch_ai.config.settings import EvolutionConfig, ModelConfig
-from epoch_ai.models.multi_head import MultiHeadSpec, multi_head_train_loss, multi_head_val_loss
+from epoch_ai.models.multi_head import (
+    MultiHeadSpec,
+    multi_head_train_loss,
+    multi_head_val_loss_torch,
+)
 from epoch_ai.models.nn_genome import NNGenome
 from epoch_ai.utils.logging import get_logger
 
@@ -522,15 +526,19 @@ def train_genome(
                     break
                 continue
 
+            # Human: skip val on most epochs when interval > 1; still early-stop on scheduled checks.
+            # Agent: CONFIG nn.val_check_interval; CAUSAL val ordering unchanged when interval=1.
+            if (epoch + 1) % nn_cfg.val_check_interval != 0:
+                continue
+
             model.eval()
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", enabled=use_amp):
                     val_logits = model(x_val_t)
-                if multi_head is not None and primary_horizon is not None:
-                    val_logits_np = val_logits.float().cpu().numpy()
-                    val_loss = multi_head_val_loss(
-                        val_logits_np,
-                        y_val,
+                if multi_head is not None and primary_horizon is not None and y_val_t is not None:
+                    val_loss = multi_head_val_loss_torch(
+                        val_logits,
+                        y_val_t,
                         multi_head,
                         primary_horizon=primary_horizon,
                     )
@@ -623,11 +631,10 @@ def train_genome(
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", enabled=use_amp):
                     val_logits = model(x_val_t)
-                if multi_head is not None and primary_horizon is not None:
-                    val_logits_np = val_logits.float().cpu().numpy()
-                    best_val = multi_head_val_loss(
-                        val_logits_np,
-                        y_val,
+                if multi_head is not None and primary_horizon is not None and y_val_t is not None:
+                    best_val = multi_head_val_loss_torch(
+                        val_logits,
+                        y_val_t,
                         multi_head,
                         primary_horizon=primary_horizon,
                     )

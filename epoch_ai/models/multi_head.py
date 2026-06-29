@@ -141,6 +141,37 @@ def multi_head_val_loss(
     return dir_loss + float(np.mean(pinballs))
 
 
+def multi_head_val_loss_torch(
+    logits,
+    y_true,
+    spec: MultiHeadSpec,
+    *,
+    primary_horizon: int,
+) -> float:
+    """GPU validation loss matching :func:`multi_head_val_loss` (no host round-trip)."""
+    import torch
+
+    logits = logits.float()
+    y_true = y_true.float()
+    pinballs: list = []
+    q = len(spec.quantiles)
+    for h in spec.horizons:
+        base = spec.head_offset(h)
+        q_preds = logits[:, base : base + q]
+        q_sorted, _ = torch.sort(q_preds, dim=1)
+        q_true = y_true[:, base : base + q]
+        for k, qt in enumerate(spec.quantiles):
+            err = q_true[:, k] - q_sorted[:, k]
+            pinballs.append(torch.maximum(qt * err, (qt - 1.0) * err).mean())
+    dir_idx = spec.direction_index(primary_horizon)
+    dir_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits[:, dir_idx],
+        y_true[:, dir_idx],
+        reduction="mean",
+    )
+    return float(dir_loss + torch.stack(pinballs).mean())
+
+
 def parse_structured_predictions(
     logits: np.ndarray,
     spec: MultiHeadSpec,

@@ -422,7 +422,16 @@ class NNConfig(BaseModel):
         le=512,
         description=(
             "Target minibatch steps per epoch when cuda_auto_batch scales batch size up "
-            "(lower = smaller batches, safer on weak GPUs)."
+            "(lower = larger batches and more GPU work per step; raise on weak GPUs)."
+        ),
+    )
+    val_check_interval: int = Field(
+        default=1,
+        ge=1,
+        le=32,
+        description=(
+            "Run validation every N training epochs (1 = every epoch). "
+            "Values > 1 reduce validation overhead slightly."
         ),
     )
     patience: int = Field(default=15, ge=1, description="Early-stopping patience on val loss.")

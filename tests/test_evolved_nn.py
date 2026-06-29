@@ -112,7 +112,10 @@ def test_resolve_cuda_worker_cap_from_config():
     assert resolve_cuda_worker_cap(4.0, evo) == 2
     assert resolve_cuda_worker_cap(10.0, evo) == 4
     assert resolve_cuda_worker_cap(48.0, evo) == 12
-    evo_weak = EvolutionConfig(cuda_worker_cap_max=2, cuda_worker_caps=[1, 2, 2, 2, 2, 2])
+    evo_weak = EvolutionConfig(
+        cuda_worker_cap_max=2,
+        cuda_worker_caps=[1, 2, 2, 2, 2],
+    )
     assert resolve_cuda_worker_cap(48.0, evo_weak) == 2
     evo_fixed = EvolutionConfig(cuda_auto_workers=False, cuda_worker_cap_fallback=1)
     assert resolve_cuda_worker_cap(48.0, evo_fixed) == 1

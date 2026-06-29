@@ -136,7 +136,8 @@ model:
     batch_size: 256               # base batch; CUDA may scale up when cuda_auto_batch=true
     cuda_auto_batch: true         # scale batches toward cuda_batch_cap on GPU
     cuda_batch_cap: 2048          # max auto batch (lower on weak GPUs, e.g. 512)
-    cuda_batches_per_epoch: 32    # target steps/epoch when auto-batch scales up
+    cuda_batches_per_epoch: 32    # target steps/epoch when auto-batch scales up (use 16 on big GPUs)
+    val_check_interval: 1          # validate every N epochs (1 = every epoch)
     patience: 15
     compute_importance: true       # permutation importance on final walk-forward fit only
     mixed_precision: true          # torch.autocast on CUDA (disable on very old GPUs if unstable)
