@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from epoch_ai.execution.kill_switch import KillSwitch
 from epoch_ai.execution.live_engine import LiveTradingEngine
 from epoch_ai.services.training import TrainingService
+
+pytestmark = pytest.mark.slow
 
 
 def test_live_engine_respects_kill_switch(small_config, tmp_path):

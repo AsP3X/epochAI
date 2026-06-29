@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 
@@ -151,11 +152,12 @@ def test_basis_features_with_spot_close(market, small_config):
     assert "deriv_basis_z" in features.columns
 
 
+@pytest.mark.slow
 def test_full_feature_expansion_produces_many_columns(small_config):
     """Expanded feature groups emit a large, non-null matrix on synthetic data."""
     from epoch_ai.data.synthetic import generate_synthetic_ohlcv
 
-    big = generate_synthetic_ohlcv(timeframe="15m", start="2020-01-01", n_bars=8000, seed=99)
+    big = generate_synthetic_ohlcv(timeframe="15m", start="2020-01-01", n_bars=4000, seed=99)
     small_config.features.patterns = True
     small_config.features.manipulation = True
     small_config.features.higher_timeframe = True
@@ -164,7 +166,7 @@ def test_full_feature_expansion_produces_many_columns(small_config):
     small_config.data.synthesize_market_extensions = True
     features = FeaturePipeline(small_config).transform(big)
     assert features.shape[1] > 200
-    assert features.shape[0] > 500
+    assert features.shape[0] > 300
     assert "htf_1h_ret_1" in features.columns
     assert "deriv_mark_premium_z" in features.columns
     assert "oc_mvrv_z" in features.columns

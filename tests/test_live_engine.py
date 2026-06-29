@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from epoch_ai.services.runtime import RuntimeService
 from epoch_ai.services.training import TrainingService
+
+pytestmark = pytest.mark.slow
 
 
 def test_live_feed_predict_and_trade(small_config, tmp_path):

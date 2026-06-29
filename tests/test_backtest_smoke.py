@@ -5,6 +5,10 @@ from __future__ import annotations
 from epoch_ai.backtesting.engine import Backtester
 from epoch_ai.features.pipeline import FeaturePipeline
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def test_backtest_learning_curve(market, small_config):
     features = FeaturePipeline(small_config).transform(market)

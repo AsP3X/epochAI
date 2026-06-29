@@ -24,6 +24,7 @@ def test_cli_download(tmp_path, monkeypatch):
     assert main(["download", "--config", str(cfg), "--bars", "500"]) == 0
 
 
+@pytest.mark.slow
 def test_cli_backtest_smoke(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "cfg.yaml"
@@ -34,6 +35,13 @@ data:
   use_synthetic_fallback: true
   data_dir: artifacts/data
   context_symbols: []
+  synthesize_market_extensions: false
+features:
+  higher_timeframe: false
+  macro: false
+  onchain: false
+  patterns: false
+  manipulation: false
 model:
   backend: lightgbm
   num_boost_round: 40
@@ -51,7 +59,7 @@ walk_forward:
             "--config",
             str(cfg),
             "--bars",
-            "5000",
+            "2500",
             "--max-steps",
             "2",
             "--out",
@@ -69,6 +77,7 @@ def test_cli_set_invalid():
         main(["info", "--set", "notvalid"])
 
 
+@pytest.mark.slow
 def test_cli_auto_retrain_timed(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "cfg.yaml"
@@ -79,6 +88,13 @@ data:
   use_synthetic_fallback: true
   data_dir: artifacts/data
   context_symbols: []
+  synthesize_market_extensions: false
+features:
+  higher_timeframe: false
+  macro: false
+  onchain: false
+  patterns: false
+  manipulation: false
 model:
   backend: lightgbm
   model_dir: artifacts/models

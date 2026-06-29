@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from epoch_ai.services.runtime import RuntimeService
 from epoch_ai.services.training import TrainingService
 
 
+@pytest.mark.slow
 def test_golden_train_and_live_feed(small_config, tmp_path):
     """End-to-end benchmark with fixed synthetic seed and loose stability checks."""
     small_config.model.model_dir = str(tmp_path / "models")

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from epoch_ai.export.model_card import export_bundle_with_card
 from epoch_ai.services.training import TrainingService
+
+pytestmark = pytest.mark.slow
 
 
 def test_export_bundle_with_model_card(small_config, tmp_path):

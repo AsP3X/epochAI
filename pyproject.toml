@@ -46,3 +46,6 @@ ignore = ["E501", "B008"]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "slow: end-to-end training or CLI integration (skip locally with -m 'not slow')",
+]

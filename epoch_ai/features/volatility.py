@@ -91,9 +91,9 @@ class VolatilityFeatures(FeatureGroup):
         ).mean()
 
         for lag in (1, 6):
-            out[f"vol_autocorr_{lag}_48"] = ret.rolling(48, min_periods=24).apply(
-                lambda x, lag=lag: pd.Series(x).autocorr(lag=lag) if len(x) > lag else np.nan,
-                raw=False,
+            # Vectorized lag-k autocorr: corr(ret, ret.shift(lag)) in each rolling window.
+            out[f"vol_autocorr_{lag}_48"] = ret.rolling(48, min_periods=24).corr(
+                ret.shift(lag)
             )
 
         return out

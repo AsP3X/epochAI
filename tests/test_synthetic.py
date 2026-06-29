@@ -9,7 +9,7 @@ from epoch_ai.data.synthetic import generate_synthetic_ohlcv
 
 
 def test_shape_and_columns(market):
-    assert len(market) == 8000
+    assert len(market) == 4000
     for col in ["open", "high", "low", "close", "volume", "funding_rate", "open_interest"]:
         assert col in market.columns
 

@@ -7,6 +7,10 @@ from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.learning.progressive import ProgressiveLearningEngine
 from epoch_ai.logging_system.store import PredictionStore
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def test_progressive_run(market, small_config):
     features = FeaturePipeline(small_config).transform(market)

@@ -85,8 +85,6 @@ class DerivativesFeatures(FeatureGroup):
             premium = (df["mark_price"] - idx) / idx
             out["deriv_mark_premium_pct"] = premium
             out["deriv_mark_premium_z"] = rolling_z(premium)
-            out["deriv_index_basis_pct"] = premium
-            out["deriv_index_basis_z"] = rolling_z(premium)
 
         if "premium_index" in df.columns:
             prem = df["premium_index"]

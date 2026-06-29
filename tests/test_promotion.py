@@ -92,6 +92,7 @@ def test_registry_promotion_pointer(market, small_config, tmp_path):
         registry.set_promoted("v_999")
 
 
+@pytest.mark.slow
 def test_auto_retrain_bootstrap_promotes(small_config, tmp_path):
     small_config.model.model_dir = str(tmp_path / "models")
     small_config.data.data_dir = str(tmp_path / "data")
@@ -111,6 +112,7 @@ def test_auto_retrain_bootstrap_promotes(small_config, tmp_path):
     assert model.feature_names_
 
 
+@pytest.mark.slow
 def test_auto_retrain_second_cycle_keeps_loadable_champion(small_config, tmp_path):
     small_config.model.model_dir = str(tmp_path / "models")
     small_config.data.data_dir = str(tmp_path / "data")

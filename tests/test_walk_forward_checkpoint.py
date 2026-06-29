@@ -16,6 +16,8 @@ from epoch_ai.learning.checkpoint import (
     validate_checkpoint,
 )
 from epoch_ai.learning.progressive import ProgressiveLearningEngine
+
+pytestmark = pytest.mark.slow
 from epoch_ai.models.registry import ModelRegistry
 
 
@@ -161,14 +163,15 @@ def test_fresh_clears_checkpoint_and_restarts(market, small_config, tmp_path):
 def test_completed_run_clears_checkpoint(market, small_config, tmp_path):
     small_config.walk_forward.checkpoint_path = str(tmp_path / "wf.json")
     small_config.model.model_dir = str(tmp_path / "models")
-    # Run the entire synthetic history (max_steps unset).
+    # Short history so the walk-forward exhausts data in ~3 steps (fast test).
+    short = market.iloc[:1800].copy()
     small_config.walk_forward.max_steps = None
     small_config.walk_forward.initial_train_period = 800
     small_config.walk_forward.step_size = 400
-    features = FeaturePipeline(small_config).transform(market)
+    features = FeaturePipeline(small_config).transform(short)
 
     ProgressiveLearningEngine(small_config, register_models=False).run(
-        market,
+        short,
         features,
         resume=False,
         fresh=True,

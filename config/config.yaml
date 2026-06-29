@@ -32,7 +32,7 @@ data:
   fetch_fear_greed: true       # Crypto Fear & Greed index (Alternative.me)
   fetch_open_interest: true   # paginated OI history from the exchange
   fetch_spot_basis: true       # spot reference close for deriv_basis features
-  synthesize_market_extensions: true  # proxy columns offline when feeds absent
+  synthesize_market_extensions: false  # OFF: proxies are noise/price-derived, not real feeds
   spot_exchange: "binance"
   spot_symbol: null            # defaults to primary symbol (BTC/USDT spot)
 

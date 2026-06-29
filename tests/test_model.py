@@ -6,11 +6,14 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from epoch_ai.features.pipeline import FeaturePipeline, build_target
 from epoch_ai.models.calibration import ProbabilityCalibrator
 from epoch_ai.models.lightgbm_model import LightGBMModel
 from epoch_ai.models.registry import ModelRegistry
+
+pytestmark = pytest.mark.slow
 
 
 def _xy(market, config):

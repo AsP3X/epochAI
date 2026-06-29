@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from epoch_ai.learning.retrain_job import run_retrain
+
+pytestmark = pytest.mark.slow
 
 
 def test_retrain_from_parquet_fallback(small_config, tmp_path, monkeypatch):

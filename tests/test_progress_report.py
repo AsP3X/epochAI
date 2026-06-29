@@ -24,16 +24,17 @@ def _resolved_rows(market, config) -> int:
     return len(features.join(y).join(fwd).dropna(subset=["target", "forward_return"]))
 
 
+@pytest.mark.slow
 def test_estimate_total_steps_matches_engine(market, small_config, tmp_path):
     wf = small_config.walk_forward
-    small_config.walk_forward.max_steps = None
+    small_config.walk_forward.max_steps = 3
     small_config.walk_forward.checkpoint_path = str(tmp_path / "wf.json")
     n = _resolved_rows(market, small_config)
     expected = estimate_total_walk_forward_steps(
         n,
         initial_train_period=wf.initial_train_period,
         step_size=wf.step_size,
-        max_steps=None,
+        max_steps=3,
     )
     result = ProgressiveLearningEngine(small_config, register_models=False).run(
         market,

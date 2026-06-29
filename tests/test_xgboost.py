@@ -17,6 +17,8 @@ from epoch_ai.models.registry import ModelRegistry
 xgb = pytest.importorskip("xgboost")
 from epoch_ai.models.xgboost_model import XGBoostModel  # noqa: E402
 
+pytestmark = pytest.mark.slow
+
 
 def _xy(market, config):
     features = FeaturePipeline(config).transform(market)

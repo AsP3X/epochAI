@@ -13,6 +13,8 @@ pytest.importorskip("torch")
 
 from epoch_ai.models.evolved_nn_model import EvolvedNNModel  # noqa: E402
 
+pytestmark = pytest.mark.slow
+
 
 def _xy(market, config):
     features = FeaturePipeline(config).transform(market)
@@ -80,6 +82,7 @@ def test_calibration_persisted(market, small_config, tmp_path):
     assert loaded.calibrator_ is not None
 
 
+@pytest.mark.slow
 def test_feature_importance_non_empty(market, small_config):
     cfg = _evolved_config(small_config)
     x, y = _xy(market, cfg)
@@ -109,6 +112,7 @@ def test_resolve_device_auto_defaults_cpu(small_config):
     assert device.type in ("cpu", "cuda")
 
 
+@pytest.mark.slow
 def test_parallel_evolution_completes(market, small_config):
     cfg = _evolved_config(small_config)
     cfg.model.evolution.fast_fit = False
@@ -170,6 +174,7 @@ def test_inference_model_cached_across_predicts(market, small_config):
     assert first.shape[0] == 20 and second.shape[0] == 20
 
 
+@pytest.mark.slow
 def test_evolution_early_stop_patience(market, small_config):
     """Evolution halts once no improvement for the configured patience."""
     cfg = _evolved_config(small_config)
@@ -205,6 +210,7 @@ def test_warm_start_from_seed_genome(market, small_config):
     assert second.state_dict_ is not None
 
 
+@pytest.mark.slow
 def test_evolution_runs_without_fast_fit(market, small_config):
     """Evolution path completes with a small search budget."""
     cfg = _evolved_config(small_config)

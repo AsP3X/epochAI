@@ -13,6 +13,8 @@ from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.services.runtime import RuntimeService
 from epoch_ai.services.training import TrainingService
 
+pytestmark = pytest.mark.slow
+
 
 def test_training_service_train(small_config, tmp_path):
     small_config.model.model_dir = str(tmp_path / "models")

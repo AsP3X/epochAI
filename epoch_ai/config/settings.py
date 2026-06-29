@@ -69,10 +69,12 @@ class DataConfig(BaseModel):
         description="Spot symbol for basis; defaults to the primary symbol.",
     )
     synthesize_market_extensions: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "Synthesise derived/macro/on-chain proxy columns when absent so the "
-            "full feature set is available offline (synthetic fallback, tests)."
+            "Synthesise derived/macro/on-chain proxy columns when absent. OFF by "
+            "default: the proxies are price-derived or pure noise and must not be "
+            "fed to the model as if they were real feeds. Enable only for offline "
+            "pipeline demos/tests that need the full column set populated."
         ),
     )
 
