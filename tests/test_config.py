@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
+from epoch_ai.config.overrides import apply_overrides, parse_set_args
 from epoch_ai.config.settings import AppConfig, load_config
 
 
@@ -166,9 +167,29 @@ def test_lightgbm_default_retrain_frequency():
 
 def test_nn_performance_defaults():
     nn = AppConfig().model.nn
+    assert nn.min_layers == 1
+    assert nn.max_layers == 3
+    assert nn.fixed_hidden_sizes is None
     assert nn.compute_importance is True
     assert nn.mixed_precision is True
     assert nn.torch_compile is True
+
+
+def test_nn_deep_layers_override_via_cli():
+    overrides = parse_set_args(
+        [
+            "model.nn.min_layers=4",
+            "model.nn.max_layers=6",
+            "model.nn.hidden_size_max=1024",
+            "model.nn.fixed_hidden_sizes=[512,384,256,128]",
+        ]
+    )
+    config = AppConfig.model_validate(apply_overrides({}, overrides))
+    nn = config.model.nn
+    assert nn.min_layers == 4
+    assert nn.max_layers == 6
+    assert nn.hidden_size_max == 1024
+    assert nn.fixed_hidden_sizes == [512, 384, 256, 128]
 
 
 def test_invalid_backend_rejected():

@@ -7,9 +7,11 @@ from argparse import Namespace
 import pytest
 
 from epoch_ai.cli import cmd_progress
+from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.learning.checkpoint import build_checkpoint, save_checkpoint
 from epoch_ai.learning.progress_report import (
+    count_resolved_rows,
     estimate_total_walk_forward_steps,
     format_training_progress,
     gather_training_progress,
@@ -115,6 +117,23 @@ def test_build_fraction_bar():
     assert bar.startswith("[")
     assert bar.endswith("]")
     assert len(bar) == 12
+
+
+def test_count_resolved_rows_uses_cache_only(market, small_config, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def spy_load(self, symbol=None, **kwargs):
+        captured.update(kwargs)
+        cap = kwargs.get("n_bars")
+        cap = len(market) if cap is None else min(int(cap), len(market))
+        return market.iloc[:cap].copy()
+
+    monkeypatch.setattr(HistoricalDownloader, "load_or_download", spy_load)
+
+    rows, n_features = count_resolved_rows(small_config, n_bars=1000)
+    assert captured.get("fetch_if_missing") is False
+    assert rows > 0
+    assert n_features > 0
 
 
 def test_watch_training_progress_exits_on_interrupt(small_config, tmp_path, monkeypatch):

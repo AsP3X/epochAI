@@ -50,7 +50,17 @@ def _patch_offline_market_download(request, monkeypatch, market):
     if module in _DOWNLOADER_INTEGRATION_MODULES:
         return
 
-    def fake_load(self, symbol=None, *, n_bars=None, force=False, skip_enrichment=False):
+    def fake_load(
+        self,
+        symbol=None,
+        *,
+        n_bars=None,
+        align_index=None,
+        force=False,
+        fetch_if_missing=True,
+        skip_enrichment=False,
+    ):
+        del symbol, align_index, force, fetch_if_missing, skip_enrichment
         cap = len(market) if n_bars is None else min(n_bars, len(market))
         return market.iloc[:cap].copy()
 

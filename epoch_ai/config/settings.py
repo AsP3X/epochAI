@@ -304,9 +304,30 @@ class EvolutionConfig(BaseModel):
 class NNConfig(BaseModel):
     """PyTorch MLP training limits for ``evolved_nn``."""
 
-    max_layers: int = Field(default=3, ge=1, le=5)
+    min_layers: int = Field(
+        default=1,
+        ge=1,
+        le=12,
+        description=(
+            "Minimum hidden layers evolution may produce. Raise with max_layers to "
+            "bias search toward deeper networks."
+        ),
+    )
+    max_layers: int = Field(
+        default=3,
+        ge=1,
+        le=12,
+        description="Maximum hidden layers (depth ceiling for random genomes and mutation).",
+    )
     hidden_size_min: int = Field(default=32, ge=8)
     hidden_size_max: int = Field(default=512, ge=32)
+    fixed_hidden_sizes: list[int] | None = Field(
+        default=None,
+        description=(
+            "Optional fixed layer widths (e.g. [256, 256, 128, 64]). When set, seeds "
+            "default_genome and random_genome; evolution still mutates around this shape."
+        ),
+    )
     max_epochs: int = Field(default=200, ge=10)
     batch_size: int = Field(default=256, ge=16)
     patience: int = Field(default=15, ge=1, description="Early-stopping patience on val loss.")
@@ -325,6 +346,26 @@ class NNConfig(BaseModel):
         default=True,
         description="Wrap MLP candidates with torch.compile when PyTorch 2+ is available.",
     )
+
+    @model_validator(mode="after")
+    def _validate_layer_bounds(self) -> NNConfig:
+        if self.min_layers > self.max_layers:
+            raise ValueError("model.nn.min_layers must be <= model.nn.max_layers")
+        if self.hidden_size_min > self.hidden_size_max:
+            raise ValueError("model.nn.hidden_size_min must be <= hidden_size_max")
+        if self.fixed_hidden_sizes:
+            depth = len(self.fixed_hidden_sizes)
+            if depth < self.min_layers or depth > self.max_layers:
+                raise ValueError(
+                    "model.nn.fixed_hidden_sizes length must be between min_layers and max_layers"
+                )
+            for width in self.fixed_hidden_sizes:
+                if width < self.hidden_size_min or width > self.hidden_size_max:
+                    raise ValueError(
+                        "each model.nn.fixed_hidden_sizes entry must be within "
+                        "[hidden_size_min, hidden_size_max]"
+                    )
+        return self
 
 
 class ModelConfig(BaseModel):

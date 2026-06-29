@@ -53,7 +53,9 @@ class HistoricalDownloader:
         symbol: str | None = None,
         *,
         n_bars: int | None = None,
+        align_index: pd.DatetimeIndex | None = None,
         force: bool = False,
+        fetch_if_missing: bool = True,
         skip_enrichment: bool = False,
     ) -> pd.DataFrame:
         """Return cleaned data for ``symbol``, using cache when available.
@@ -63,12 +65,18 @@ class HistoricalDownloader:
         ``n_bars`` rows (a tail slice), so consumers like ``run``/``backtest`` work on
         recent data even when the cache holds far more.
 
+        When ``align_index`` is set (cross-asset joins), data is loaded for that
+        **timestamp window** instead of the most recent ``n_bars`` tail.
+
         Args:
             symbol: Trading pair; defaults to the primary configured symbol.
             n_bars: Number of most-recent bars to return. When ``None`` a multi-year
                 default is derived from ``historical_start_date`` and the full cache
                 is returned.
+            align_index: Primary bar index; fetch context covering this window.
             force: Re-download even if a cache file exists.
+            fetch_if_missing: When ``False``, use parquet cache only; never call the
+                exchange (``train`` default). Raises if cache is missing or too small.
             skip_enrichment: When ``True``, skip cross-asset/sentiment/basis joins
                 (used when loading context symbols).
 
@@ -76,11 +84,55 @@ class HistoricalDownloader:
             A cleaned OHLCV(+context) DataFrame indexed by ``timestamp``.
         """
         symbol = symbol or self.config.primary_symbol
+        if align_index is not None and len(align_index) > 0:
+            return self._load_for_window(
+                symbol,
+                align_index.min(),
+                align_index.max(),
+                force=force,
+                fetch_if_missing=fetch_if_missing,
+                skip_enrichment=skip_enrichment,
+            )
+
         cache = self._cache_path(symbol)
+        if not fetch_if_missing and not force:
+            if not cache.exists():
+                raise RuntimeError(
+                    f"No cached data for {symbol} under {self.data_dir}. "
+                    f"Run: python -m epoch_ai download --bars {n_bars or 'N'}"
+                )
+            cached = pd.read_parquet(cache)
+            if n_bars is not None and len(cached) < n_bars:
+                raise RuntimeError(
+                    f"Cache has {len(cached)} bars for {symbol} ({cache}) but "
+                    f"{n_bars} requested. Run: python -m epoch_ai download --bars {n_bars}"
+                )
+            logger.info(
+                "Loaded %d cached bars for %s from %s (cache-only)",
+                min(len(cached), n_bars) if n_bars else len(cached),
+                symbol,
+                cache,
+            )
+            return self._finalize_load(
+                self._tail(cached, n_bars),
+                symbol,
+                skip_enrichment=skip_enrichment,
+                fetch_if_missing=False,
+            )
+
         cached: pd.DataFrame | None = None
         if cache.exists() and not force:
             cached = pd.read_parquet(cache)
-            if n_bars is None or len(cached) >= n_bars:
+            if n_bars is None:
+                target_default = self._default_bar_count()
+                if len(cached) >= target_default:
+                    logger.info("Loaded %d cached bars for %s from %s", len(cached), symbol, cache)
+                    return self._finalize_load(
+                        self._tail(cached, n_bars),
+                        symbol,
+                        skip_enrichment=skip_enrichment,
+                    )
+            elif len(cached) >= n_bars and self._cache_is_live(cached):
                 logger.info("Loaded %d cached bars for %s from %s", len(cached), symbol, cache)
                 return self._finalize_load(
                     self._tail(cached, n_bars),
@@ -89,21 +141,152 @@ class HistoricalDownloader:
                 )
 
         target_bars = n_bars or self._default_bar_count()
-        if cached is not None and len(cached) > 0:
+        recent_tail = n_bars is not None
+        if cached is not None and len(cached) > 0 and not recent_tail:
+            if len(cached) >= target_bars or self._cache_covers_start(cached):
+                logger.info(
+                    "Extending cached %s history: %d -> %d bars (%s)",
+                    symbol,
+                    len(cached),
+                    target_bars,
+                    cache,
+                )
+                df = self._download(symbol, target_bars, base_df=cached)
+            else:
+                logger.info(
+                    "Backfilling %s from exchange start (cache %d bars, target %d; "
+                    "may take a long time) %s",
+                    symbol,
+                    len(cached),
+                    target_bars,
+                    cache,
+                )
+                fetched = self._download(symbol, target_bars, recent_tail=False)
+                df = self._merge_cached(cached, fetched)
+        elif cached is not None and len(cached) > 0 and recent_tail:
             logger.info(
-                "Extending cached %s history: %d -> %d bars (%s)",
+                "Refreshing recent %s history (%d bars requested; cache ends %s)",
                 symbol,
-                len(cached),
                 target_bars,
-                cache,
+                cached.index.max(),
             )
-            df = self._download(symbol, target_bars, base_df=cached)
+            try:
+                df = self._download(symbol, target_bars, recent_tail=True)
+                df = self._merge_cached(cached, df)
+            except RuntimeError:
+                logger.warning(
+                    "Recent refresh failed for %s; using cached bars ending %s",
+                    symbol,
+                    cached.index.max(),
+                )
+                df = cached
         else:
-            df = self._download(symbol, target_bars)
+            df = self._download(symbol, target_bars, recent_tail=recent_tail)
         df = align_and_clean(df, self.config.timeframe)
         df.to_parquet(cache)
         logger.info("Saved %d bars for %s to %s", len(df), symbol, cache)
         return self._finalize_load(self._tail(df, n_bars), symbol, skip_enrichment=skip_enrichment)
+
+    def _load_for_window(
+        self,
+        symbol: str,
+        window_start: pd.Timestamp,
+        window_end: pd.Timestamp,
+        *,
+        force: bool,
+        fetch_if_missing: bool,
+        skip_enrichment: bool,
+    ) -> pd.DataFrame:
+        """Fetch or slice cached OHLCV covering the primary timestamp window."""
+        cache = self._cache_path(symbol)
+        cached: pd.DataFrame | None = None
+        if cache.exists() and not force:
+            cached = pd.read_parquet(cache)
+
+        if cached is not None and self._cache_covers_window(cached, window_start, window_end):
+            out = cached.loc[cached.index <= window_end].copy()
+            logger.info(
+                "Loaded cached %s for primary window (%s -> %s, %d bars)",
+                symbol,
+                window_start,
+                window_end,
+                len(out),
+            )
+            return self._finalize_load(
+                out, symbol, skip_enrichment=skip_enrichment, fetch_if_missing=False
+            )
+
+        if not fetch_if_missing and not force:
+            have = 0 if cached is None else len(cached)
+            raise RuntimeError(
+                f"Cache for {symbol} does not cover {window_start} -> {window_end} "
+                f"({have} bars at {cache}). Run download for this window first."
+            )
+
+        target_bars = self._bars_in_window(window_start, window_end)
+        fetched = self._download(
+            symbol,
+            target_bars,
+            since_ts=window_start,
+            until_ts=window_end,
+        )
+        fetched = align_and_clean(fetched, self.config.timeframe)
+        merged = self._merge_cached(cached, fetched)
+        merged.to_parquet(cache)
+        logger.info("Saved %d bars for %s to %s", len(merged), symbol, cache)
+        out = merged.loc[merged.index <= window_end].copy()
+        return self._finalize_load(out, symbol, skip_enrichment=skip_enrichment)
+
+    @staticmethod
+    def _cache_covers_window(
+        cached: pd.DataFrame,
+        window_start: pd.Timestamp,
+        window_end: pd.Timestamp,
+    ) -> bool:
+        if cached.empty:
+            return False
+        return cached.index.min() <= window_start and cached.index.max() >= window_end
+
+    @staticmethod
+    def _merge_cached(
+        cached: pd.DataFrame | None,
+        fetched: pd.DataFrame,
+    ) -> pd.DataFrame:
+        if cached is None or cached.empty:
+            return fetched
+        combined = pd.concat([cached, fetched])
+        return combined[~combined.index.duplicated(keep="last")].sort_index()
+
+    def _bars_in_window(
+        self,
+        window_start: pd.Timestamp,
+        window_end: pd.Timestamp,
+    ) -> int:
+        minutes = (window_end - window_start).total_seconds() / 60.0
+        return max(1, int(minutes / timeframe_to_minutes(self.config.timeframe)) + 2)
+
+    def _cache_is_live(self, cached: pd.DataFrame) -> bool:
+        """True when the cache includes bars near the current time."""
+        if cached.empty:
+            return False
+        tf = pd.Timedelta(minutes=timeframe_to_minutes(self.config.timeframe))
+        now = pd.Timestamp.now(tz="UTC")
+        return cached.index.max() >= now - tf * 3
+
+    def _cache_covers_start(self, cached: pd.DataFrame) -> bool:
+        """True when cached history begins near the configured start date."""
+        if cached.empty:
+            return False
+        start = datetime.fromisoformat(self.config.data.start_date_iso()).replace(tzinfo=UTC)
+        tf = pd.Timedelta(minutes=timeframe_to_minutes(self.config.timeframe))
+        return cached.index.min() <= start + tf * 2
+
+    def _since_ms_for_recent_bars(self, exchange, target_bars: int) -> int:
+        """Estimate ``since`` so paginating forward yields roughly the latest ``target_bars``."""
+        tf_ms = timeframe_to_minutes(self.config.timeframe) * 60_000
+        lookback_ms = int(target_bars * tf_ms * 1.2)
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        return max(self._start_since_ms(exchange), now_ms - lookback_ms)
 
     def _finalize_load(
         self,
@@ -111,13 +294,16 @@ class HistoricalDownloader:
         symbol: str,
         *,
         skip_enrichment: bool,
+        fetch_if_missing: bool = True,
     ) -> pd.DataFrame:
         """Optionally enrich the primary symbol with cross-asset and alt data."""
         if skip_enrichment or symbol != self.config.primary_symbol:
             return df
         from epoch_ai.data.enrichment import enrich_primary_market
 
-        return enrich_primary_market(df, self.config, self)
+        return enrich_primary_market(
+            df, self.config, self, fetch_if_missing=fetch_if_missing
+        )
 
     @staticmethod
     def _tail(df: pd.DataFrame, n_bars: int | None) -> pd.DataFrame:
@@ -139,15 +325,26 @@ class HistoricalDownloader:
         target_bars: int,
         *,
         base_df: pd.DataFrame | None = None,
+        since_ts: pd.Timestamp | None = None,
+        until_ts: pd.Timestamp | None = None,
+        recent_tail: bool = False,
     ) -> pd.DataFrame:
         """Try CCXT first; fall back to synthetic data on any failure."""
+        windowed = since_ts is not None or until_ts is not None
         base_len = len(base_df) if base_df is not None else 0
-        if base_len >= target_bars:
+        if not windowed and not recent_tail and base_len >= target_bars:
             return base_df.iloc[:target_bars].copy()  # type: ignore[union-attr]
 
         ccxt_reason: str | None = None
         try:
-            df = self._download_ccxt(symbol, target_bars, base_df=base_df)
+            df = self._download_ccxt(
+                symbol,
+                target_bars,
+                base_df=base_df,
+                since_ts=since_ts,
+                until_ts=until_ts,
+                recent_tail=recent_tail,
+            )
             if df is not None and len(df) > 0:
                 return df
             ccxt_reason = "CCXT returned no data"
@@ -231,6 +428,9 @@ class HistoricalDownloader:
         target_bars: int,
         *,
         base_df: pd.DataFrame | None = None,
+        since_ts: pd.Timestamp | None = None,
+        until_ts: pd.Timestamp | None = None,
+        recent_tail: bool = False,
     ) -> pd.DataFrame | None:
         """Paginate OHLCV from the exchange via CCXT (if installed/reachable)."""
         try:
@@ -247,12 +447,20 @@ class HistoricalDownloader:
         timeframe = self.config.timeframe
         tf_ms = timeframe_to_minutes(timeframe) * 60_000
 
-        if base_df is not None and not base_df.empty:
+        if since_ts is not None:
+            since = int(since_ts.timestamp() * 1000)
+            desc = f"Downloading {symbol}"
+            partial = None
+        elif base_df is not None and not base_df.empty:
             since = int(base_df.index.max().timestamp() * 1000) + tf_ms
             desc = f"Extending {symbol}"
             partial: pd.DataFrame | None = base_df.copy()
         else:
-            since = self._start_since_ms(exchange)
+            since = (
+                self._since_ms_for_recent_bars(exchange, target_bars)
+                if recent_tail
+                else self._start_since_ms(exchange)
+            )
             desc = f"Downloading {symbol}"
             partial = None
 
@@ -263,7 +471,29 @@ class HistoricalDownloader:
             progress.begin_rate_tracking()
             progress.refresh()
 
-            while partial is None or len(partial) < target_bars:
+            while True:
+                if until_ts is not None and partial is not None:
+                    # Human: do not stop just because max >= until when the exchange's
+                    # first listing is entirely after the window (empty slice + NaT).
+                    if partial.index.min() > until_ts:
+                        logger.info(
+                            "Earliest %s bar (%s) is after primary window end (%s); "
+                            "no overlapping history for this slice.",
+                            symbol,
+                            partial.index.min(),
+                            until_ts,
+                        )
+                        return None
+                    if partial.index.min() <= until_ts and partial.index.max() >= until_ts:
+                        break
+                elif until_ts is None and partial is not None and len(partial) >= target_bars and not recent_tail:
+                    break
+                elif recent_tail and partial is not None:
+                    now = pd.Timestamp.now(tz="UTC")
+                    tf = pd.Timedelta(minutes=timeframe_to_minutes(timeframe))
+                    if partial.index.max() >= now - tf * 2:
+                        break
+
                 prev_len = 0 if partial is None else len(partial)
                 batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
                 if not batch:
@@ -285,17 +515,19 @@ class HistoricalDownloader:
 
                 progress.advance_to(len(partial))
                 since = int(partial.index[-1].timestamp() * 1000) + tf_ms
-                if len(batch) < limit:
+                if until_ts is None and len(batch) < limit:
+                    break
+                if until_ts is not None and len(batch) < limit:
                     break
 
             final_len = 0 if partial is None else len(partial)
-            if final_len < target_bars:
+            if until_ts is None and final_len < target_bars:
                 progress.set_total(max(final_len, 1))
 
         if partial is None or partial.empty:
             return None
 
-        if final_len < target_bars:
+        if final_len < target_bars and until_ts is None:
             logger.info(
                 "Exchange history ends at %d bars for %s (requested %d).",
                 final_len,
@@ -303,7 +535,24 @@ class HistoricalDownloader:
                 target_bars,
             )
 
-        df = partial.iloc[:target_bars]
+        if until_ts is not None and since_ts is not None:
+            df = partial.loc[(partial.index >= since_ts) & (partial.index <= until_ts)].copy()
+        elif until_ts is not None:
+            df = partial.loc[partial.index <= until_ts].copy()
+        elif recent_tail:
+            df = partial.iloc[-target_bars:].copy()
+        else:
+            df = partial.iloc[:target_bars].copy()
+
+        if df.empty:
+            logger.info(
+                "No %s bars in primary window (%s -> %s).",
+                symbol,
+                since_ts or partial.index.min(),
+                until_ts or partial.index.max(),
+            )
+            return None
+
         df = self._attach_funding(exchange, symbol, df)
         if self.config.data.fetch_open_interest:
             df = self._attach_open_interest(exchange, symbol, df)
@@ -311,6 +560,8 @@ class HistoricalDownloader:
 
     def _attach_funding(self, exchange, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         """Paginate funding-rate history for derivatives markets."""
+        if df.empty:
+            return df
         if self.config.data.market_type != "future":
             return df
         if not getattr(exchange, "has", {}).get("fetchFundingRateHistory"):
@@ -354,6 +605,8 @@ class HistoricalDownloader:
 
     def _attach_open_interest(self, exchange, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         """Paginate open-interest history when the exchange supports it."""
+        if df.empty:
+            return df
         if self.config.data.market_type != "future":
             return df
         if not getattr(exchange, "has", {}).get("fetchOpenInterestHistory"):

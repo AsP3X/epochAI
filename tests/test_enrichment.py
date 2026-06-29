@@ -48,8 +48,10 @@ def test_joins_context_symbol_columns(tmp_path):
     sol["liquidations"] = 50.0
     downloader = HistoricalDownloader(config)
 
+    calls: list[dict] = []
+
     def fake_load(symbol, **kwargs):
-        del kwargs
+        calls.append({"symbol": symbol, **kwargs})
         if symbol == "ETH/USDT":
             return eth.copy()
         if symbol == "SOL/USDT":
@@ -59,6 +61,11 @@ def test_joins_context_symbol_columns(tmp_path):
     with patch.object(downloader, "load_or_download", side_effect=fake_load):
         enriched = enrich_primary_market(btc, config, downloader)
 
+    assert all(
+        len(c["align_index"]) == len(btc)
+        for c in calls
+        if c["symbol"] != config.primary_symbol
+    )
     assert "eth_close" in enriched.columns
     assert "eth_volume" in enriched.columns
     assert "eth_funding_rate" in enriched.columns

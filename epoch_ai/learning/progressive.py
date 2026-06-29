@@ -59,6 +59,36 @@ from epoch_ai.utils.timeframe import timeframe_to_minutes
 logger = get_logger(__name__)
 
 
+def resolved_target_columns(prediction) -> list[str]:
+    """Columns that must be non-NaN for a walk-forward training row."""
+    cols = ["target", "forward_return"]
+    for h in prediction.horizons:
+        cols.extend([f"ret_{h}", f"target_{h}"])
+    return cols
+
+
+def count_resolved_walk_forward_rows(
+    market: pd.DataFrame,
+    features: pd.DataFrame,
+    config: AppConfig,
+) -> int:
+    """Count rows usable for walk-forward after feature warm-up and label resolution."""
+    pred = config.prediction
+    y = build_target(market, pred)
+    fwd = forward_return(market, pred.horizon)
+    multi = build_multi_horizon_targets(market, pred)
+    data = features.join(y).join(fwd).join(multi)
+    return len(data.dropna(subset=resolved_target_columns(pred)))
+
+
+def suggest_training_bars(raw_bars: int, resolved_rows: int, config: AppConfig) -> int:
+    """Scale raw bar count so resolved rows exceed ``initial_train_period``."""
+    need = config.walk_forward.initial_train_period + 1
+    if resolved_rows <= 0:
+        return raw_bars * 2
+    return int(raw_bars * need / resolved_rows) + 500
+
+
 @dataclass(slots=True)
 class ProgressiveResult:
     """Outputs of a progressive walk-forward run.
@@ -177,23 +207,23 @@ class ProgressiveLearningEngine:
         embargo = self.config.prediction.resolved_embargo(wf.embargo)
 
         # Align features with targets/outcomes and keep only resolved rows.
+        n = count_resolved_walk_forward_rows(market, features, self.config)
+        if n <= wf.initial_train_period + 1:
+            suggested = suggest_training_bars(len(market), n, self.config)
+            raise ValueError(
+                f"Not enough resolved rows ({n}) for initial_train_period="
+                f"{wf.initial_train_period} ({len(market)} raw bars). "
+                f"Try --bars {suggested} or reduce walk_forward.initial_train_period."
+            )
+
         y = build_target(market, self.config.prediction)
         fwd = forward_return(market, horizon)
         multi = build_multi_horizon_targets(market, self.config.prediction)
         data = features.join(y).join(fwd).join(multi)
         data = data.join(market["close"].rename("close"))
-        drop_cols = ["target", "forward_return"]
-        for h in self.config.prediction.horizons:
-            drop_cols.extend([f"ret_{h}", f"target_{h}"])
+        drop_cols = resolved_target_columns(self.config.prediction)
         data = data.dropna(subset=drop_cols)
         feature_cols = list(features.columns)
-
-        n = len(data)
-        if n <= wf.initial_train_period + 1:
-            raise ValueError(
-                f"Not enough resolved rows ({n}) for initial_train_period="
-                f"{wf.initial_train_period}. Use more data or a smaller window."
-            )
 
         # Positional view of the raw market frame for context lookups.
         market_pos = {ts: i for i, ts in enumerate(market.index)}

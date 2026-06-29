@@ -149,12 +149,14 @@ def cmd_train(args: argparse.Namespace) -> int:
             register=not args.no_register,
             resume=not args.no_resume,
             fresh=args.fresh,
+            full_history=args.full_history,
+            refresh_data=args.refresh_data,
         )
     except KeyboardInterrupt:
         logger.info("Training interrupted by user.")
         _print_train_interrupted(config)
         return 130
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         logger.error("%s", exc)
         return 1
     print("\n=== Training complete ===")
@@ -989,8 +991,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Train the AI (progressive learning + model registry).",
         parents=[parent],
     )
-    p_train.add_argument("--bars", type=int, default=None, help="Approx number of bars.")
+    p_train.add_argument("--bars", type=int, default=None, help="Cap history (defaults to live cache when sufficient).")
     p_train.add_argument("--max-steps", type=int, default=None, help="Cap walk-forward steps.")
+    p_train.add_argument(
+        "--full-history",
+        action="store_true",
+        help="Backfill multi-year history from exchange start (slow; ignores cached cap).",
+    )
+    p_train.add_argument(
+        "--refresh-data",
+        action="store_true",
+        help="Re-fetch OHLCV from the exchange before training (default: cache-only).",
+    )
     p_train.add_argument("--log-predictions", action="store_true", help="Persist to SQLite.")
     p_train.add_argument(
         "--no-register",

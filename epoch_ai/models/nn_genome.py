@@ -15,6 +15,21 @@ import numpy as np
 from epoch_ai.config.settings import EvolutionConfig, NNConfig
 
 
+def _clamp_layer_size(size: int, nn: NNConfig) -> int:
+    """Clamp one hidden width to configured bounds."""
+    return max(nn.hidden_size_min, min(nn.hidden_size_max, int(size)))
+
+
+def _clamp_hidden_sizes(sizes: list[int], nn: NNConfig) -> list[int]:
+    """Clamp each layer width and enforce min_layers / max_layers depth."""
+    clamped = [_clamp_layer_size(s, nn) for s in sizes]
+    if len(clamped) < nn.min_layers:
+        clamped.extend([nn.hidden_size_min] * (nn.min_layers - len(clamped)))
+    if len(clamped) > nn.max_layers:
+        clamped = clamped[: nn.max_layers]
+    return clamped
+
+
 @dataclass(slots=True)
 class NNGenome:
     """Architecture and optimizer hyper-parameters for one MLP candidate."""
@@ -47,10 +62,21 @@ class NNGenome:
 
 def default_genome(nn: NNConfig) -> NNGenome:
     """Sensible fixed architecture used when ``evolution.fast_fit`` is enabled."""
-    mid = max(nn.hidden_size_min, min(nn.hidden_size_max, 128))
-    small = max(nn.hidden_size_min, mid // 2)
+    if nn.fixed_hidden_sizes:
+        hidden = _clamp_hidden_sizes(list(nn.fixed_hidden_sizes), nn)
+    else:
+        mid = max(nn.hidden_size_min, min(nn.hidden_size_max, 128))
+        # Human: When min_layers > 2, default depth follows min_layers so fast_fit
+        #        smokes reflect the configured depth floor.
+        # Agent: READS nn.min_layers; default depth max(min_layers, 2) for backward compat.
+        depth = max(nn.min_layers, 2)
+        hidden: list[int] = []
+        size = mid
+        for _ in range(depth):
+            hidden.append(_clamp_layer_size(size, nn))
+            size = max(nn.hidden_size_min, size // 2)
     return NNGenome(
-        hidden_sizes=[mid, small],
+        hidden_sizes=hidden,
         dropout=0.15,
         learning_rate=1e-3,
         weight_decay=1e-4,
@@ -60,12 +86,14 @@ def default_genome(nn: NNConfig) -> NNGenome:
 
 def random_genome(rng: np.random.Generator, nn: NNConfig) -> NNGenome:
     """Sample a random valid genome within configured bounds."""
-    n_layers = int(rng.integers(1, nn.max_layers + 1))
-    hidden = [
-        int(rng.integers(nn.hidden_size_min, nn.hidden_size_max + 1)) for _ in range(n_layers)
-    ]
-    # Clamp each layer to [min, max].
-    hidden = [max(nn.hidden_size_min, min(nn.hidden_size_max, h)) for h in hidden]
+    if nn.fixed_hidden_sizes:
+        hidden = _clamp_hidden_sizes(list(nn.fixed_hidden_sizes), nn)
+    else:
+        n_layers = int(rng.integers(nn.min_layers, nn.max_layers + 1))
+        hidden = [
+            int(rng.integers(nn.hidden_size_min, nn.hidden_size_max + 1)) for _ in range(n_layers)
+        ]
+        hidden = [_clamp_layer_size(h, nn) for h in hidden]
     log_lr = float(rng.uniform(math.log10(1e-4), math.log10(5e-3)))
     log_wd = float(rng.uniform(math.log10(1e-6), math.log10(1e-2)))
     return NNGenome(
@@ -97,15 +125,12 @@ def mutate_genome(
     if roll < 0.25 and len(child.hidden_sizes) < nn.max_layers:
         size = int(rng.integers(nn.hidden_size_min, nn.hidden_size_max + 1))
         child.hidden_sizes.append(size)
-    elif roll < 0.40 and len(child.hidden_sizes) > 1:
+    elif roll < 0.40 and len(child.hidden_sizes) > nn.min_layers:
         child.hidden_sizes.pop(rng.integers(0, len(child.hidden_sizes)))
     elif roll < 0.55:
         idx = int(rng.integers(0, len(child.hidden_sizes)))
         delta = int(rng.normal(0, sigma * nn.hidden_size_max))
-        child.hidden_sizes[idx] = max(
-            nn.hidden_size_min,
-            min(nn.hidden_size_max, child.hidden_sizes[idx] + delta),
-        )
+        child.hidden_sizes[idx] = _clamp_layer_size(child.hidden_sizes[idx] + delta, nn)
     elif roll < 0.70:
         child.dropout = float(np.clip(child.dropout + rng.normal(0, sigma * 0.2), 0.0, 0.5))
     elif roll < 0.85:

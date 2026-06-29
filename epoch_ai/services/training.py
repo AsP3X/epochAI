@@ -28,6 +28,55 @@ from epoch_ai.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def minimum_training_bars(config: AppConfig) -> int:
+    """Conservative raw OHLCV bar count for default walk-forward + 1m feature stack.
+
+    Uses an empirical resolved/raw ratio (~0.50 on 1m with full features + neutral_band
+    labels). Warm-up and label drops are already reflected in that ratio — do not add
+    ``min_buffer_bars`` again or the estimate overshoots (~95k vs ~86k).
+    """
+    wf = config.walk_forward
+    pred = config.prediction
+    max_h = max(pred.horizons) if pred.horizons else pred.horizon
+    resolved_ratio = 0.50
+    need_resolved = wf.initial_train_period + 1
+    return int(need_resolved / resolved_ratio) + max_h + 500
+
+
+def resolve_training_bars(
+    config: AppConfig,
+    n_bars: int | None,
+    *,
+    full_history: bool = False,
+) -> int | None:
+    """Choose download depth for ``train``: explicit cap, cached tail, or full backfill."""
+    if n_bars is not None or full_history:
+        return n_bars
+
+    min_bars = minimum_training_bars(config)
+    downloader = HistoricalDownloader(config)
+    cache_path = downloader._cache_path(config.primary_symbol)
+    if not cache_path.exists():
+        return None
+
+    cached = pd.read_parquet(cache_path)
+    if cached.empty or not downloader._cache_is_live(cached):
+        return None
+
+    target = downloader._default_bar_count()
+    if len(cached) >= target * 0.95 and downloader._cache_covers_start(cached):
+        return None
+
+    logger.info(
+        "Using %d cached bars for training (%s). Pass --full-history to backfill "
+        "~%d bars from exchange start, or --bars N to cap explicitly.",
+        len(cached),
+        cache_path,
+        target,
+    )
+    return len(cached)
+
+
 @dataclass(slots=True)
 class TrainResult:
     """Outcome of an explicit training job."""
@@ -46,7 +95,13 @@ class TrainingService:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
 
-    def download(self, *, n_bars: int | None = None, force: bool = False) -> pd.DataFrame:
+    def download(
+        self,
+        *,
+        n_bars: int | None = None,
+        force: bool = False,
+        fetch_if_missing: bool = True,
+    ) -> pd.DataFrame:
         """Fetch OHLCV history and cache as parquet.
 
         When ``model.backend`` is ``evolved_nn``, synthetic fallback is disabled so
@@ -57,6 +112,7 @@ class TrainingService:
             cfg.primary_symbol,
             n_bars=n_bars,
             force=force,
+            fetch_if_missing=fetch_if_missing,
         )
 
     def _training_data_config(self) -> AppConfig:
@@ -78,6 +134,8 @@ class TrainingService:
         register: bool = True,
         resume: bool = True,
         fresh: bool = False,
+        full_history: bool = False,
+        refresh_data: bool = False,
     ) -> TrainResult:
         """Run progressive walk-forward training and register the final model.
 
@@ -92,8 +150,50 @@ class TrainingService:
         if max_steps is not None:
             cfg.walk_forward.max_steps = max_steps
 
-        market = self.download(n_bars=n_bars)
+        min_bars = minimum_training_bars(cfg)
+        n_bars = resolve_training_bars(cfg, n_bars, full_history=full_history)
+        if n_bars is not None and n_bars < min_bars:
+            raise ValueError(
+                f"--bars {n_bars} is too small for training: need at least {min_bars} "
+                f"(initial_train_period={cfg.walk_forward.initial_train_period}, "
+                f"min_buffer_bars={cfg.execution.min_buffer_bars}). "
+                f"Example: python -m epoch_ai train --bars {min_bars} --log-predictions"
+            )
+        if n_bars is None:
+            logger.info(
+                "Full-history train (~%d bars target). This can take a long time on first "
+                "run. For a capped run: download with --bars N, then train (auto-uses "
+                "cache) or pass --bars N explicitly.",
+                HistoricalDownloader(cfg)._default_bar_count(),
+            )
+
+        market = self.download(
+            n_bars=n_bars,
+            force=refresh_data,
+            fetch_if_missing=refresh_data or full_history,
+        )
         features = FeaturePipeline(cfg).transform(market)
+        from epoch_ai.learning.progressive import (
+            count_resolved_walk_forward_rows,
+            suggest_training_bars,
+        )
+
+        resolved = count_resolved_walk_forward_rows(market, features, cfg)
+        if resolved <= cfg.walk_forward.initial_train_period:
+            suggested = suggest_training_bars(len(market), resolved, cfg)
+            raise ValueError(
+                f"{len(market)} bars yield {resolved} resolved training rows; need > "
+                f"{cfg.walk_forward.initial_train_period} for initial_train_period. "
+                f"Try --bars {suggested}, or reduce walk_forward.initial_train_period "
+                "for smoke tests."
+            )
+        if features.empty:
+            raise ValueError(
+                f"Feature pipeline produced no rows from {len(market)} bars "
+                "(all dropped as warm-up/NaN). Use more history "
+                f"(>= {min_bars} recommended) or reduce execution.min_buffer_bars / "
+                "walk_forward.initial_train_period for smoke tests."
+            )
         store = PredictionStore(cfg.logging.db_path) if log_predictions else None
 
         try:

@@ -94,9 +94,11 @@ model:
     max_workers: null             # null = auto (~4 on CUDA, else CPU count)
     early_stop_patience: null     # stop after N generations w/o improvement (null = off)
   nn:
-    max_layers: 3
+    min_layers: 1               # floor for evolutionary depth (pair with max_layers for deeper nets)
+    max_layers: 3               # ceiling (up to 12); e.g. min_layers: 4, max_layers: 6 for deep search
     hidden_size_min: 32
     hidden_size_max: 512
+    fixed_hidden_sizes: null   # e.g. [256, 256, 128, 64] — seed architecture when set
     max_epochs: 200
     batch_size: 256
     patience: 15

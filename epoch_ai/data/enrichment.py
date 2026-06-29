@@ -51,6 +51,8 @@ def enrich_primary_market(
     df: pd.DataFrame,
     config: AppConfig,
     downloader: HistoricalDownloader,
+    *,
+    fetch_if_missing: bool = True,
 ) -> pd.DataFrame:
     """Attach configured context columns to the primary market frame."""
     if df.empty:
@@ -62,13 +64,17 @@ def enrich_primary_market(
     for ctx_symbol in data_cfg.context_symbols:
         if ctx_symbol == config.primary_symbol:
             continue
-        out = _join_context_symbol(out, ctx_symbol, config, downloader)
+        out = _join_context_symbol(
+            out, ctx_symbol, config, downloader, fetch_if_missing=fetch_if_missing
+        )
 
     if data_cfg.fetch_fear_greed:
         out = _join_fear_greed(out, Path(data_cfg.data_dir))
 
     if data_cfg.fetch_spot_basis and data_cfg.market_type == "future":
-        out = _join_spot_reference(out, config, downloader)
+        out = _join_spot_reference(
+            out, config, downloader, fetch_if_missing=fetch_if_missing
+        )
 
     if data_cfg.synthesize_market_extensions:
         from epoch_ai.data.market_extensions import extend_market_columns
@@ -83,11 +89,20 @@ def _join_context_symbol(
     ctx_symbol: str,
     config: AppConfig,
     downloader: HistoricalDownloader,
+    *,
+    fetch_if_missing: bool = True,
 ) -> pd.DataFrame:
     """Align a context symbol's OHLCV(+derivatives) onto the primary index."""
     pfx = asset_prefix(ctx_symbol)
     try:
-        ctx = downloader.load_or_download(ctx_symbol, skip_enrichment=True)
+        # Human: align to primary timestamps — bar count alone can mismatch eras when
+        # BTC cache is historical and context would otherwise fetch the latest tail.
+        ctx = downloader.load_or_download(
+            ctx_symbol,
+            align_index=df.index,
+            skip_enrichment=True,
+            fetch_if_missing=fetch_if_missing,
+        )
     except Exception as exc:  # noqa: BLE001 - context is best-effort
         logger.warning("Context symbol %s unavailable: %s", ctx_symbol, exc)
         return df
@@ -181,6 +196,8 @@ def _join_spot_reference(
     df: pd.DataFrame,
     config: AppConfig,
     downloader: HistoricalDownloader,
+    *,
+    fetch_if_missing: bool = True,
 ) -> pd.DataFrame:
     """Attach spot ``close`` as ``spot_close`` for perp basis features."""
     spot_symbol = config.data.spot_symbol or config.primary_symbol
@@ -188,7 +205,15 @@ def _join_spot_reference(
 
     cache = Path(config.data.data_dir) / f"spot_{spot_symbol.replace('/', '-')}_{config.timeframe}.parquet"
 
-    spot = _load_spot_close(spot_symbol, spot_exchange, config, downloader, cache)
+    spot = _load_spot_close(
+        spot_symbol,
+        spot_exchange,
+        config,
+        downloader,
+        cache,
+        align_index=df.index,
+        fetch_if_missing=fetch_if_missing,
+    )
     if spot is None or spot.empty:
         logger.info("Spot reference unavailable for basis features.")
         return df
@@ -209,9 +234,21 @@ def _load_spot_close(
     config: AppConfig,
     downloader: HistoricalDownloader,
     cache: Path,
+    *,
+    align_index: pd.DatetimeIndex | None = None,
+    fetch_if_missing: bool = True,
 ) -> pd.Series | None:
     """Download or load cached spot closes aligned to the futures history window."""
-    if cache.exists():
+    if cache.exists() and align_index is not None:
+        try:
+            cached = pd.read_parquet(cache)
+            if "spot_close" in cached.columns and len(cached) > 0:
+                idx = cached.index
+                if idx.min() <= align_index.min() and idx.max() >= align_index.max():
+                    return cached["spot_close"]
+        except Exception:  # noqa: BLE001
+            pass
+    elif cache.exists():
         try:
             cached = pd.read_parquet(cache)
             if "spot_close" in cached.columns:
@@ -219,10 +256,22 @@ def _load_spot_close(
         except Exception:  # noqa: BLE001
             pass
 
+    if not fetch_if_missing:
+        return _spot_from_context_downloader(
+            spot_symbol,
+            config,
+            downloader,
+            cache,
+            align_index=align_index,
+            fetch_if_missing=False,
+        )
+
     try:
         import ccxt  # noqa: PLC0415
     except ImportError:
-        return _spot_from_context_downloader(spot_symbol, config, downloader, cache)
+        return _spot_from_context_downloader(
+            spot_symbol, config, downloader, cache, align_index=align_index
+        )
 
     exchange_cls = getattr(ccxt, spot_exchange, None)
     if exchange_cls is None:
@@ -233,13 +282,24 @@ def _load_spot_close(
         exchange = exchange_cls({"enableRateLimit": True})
         timeframe = config.timeframe
         tf_ms = timeframe_to_minutes(timeframe) * 60_000
-        # Human: reuse downloader's earliest/start logic via a throwaway futures exchange instance.
-        since = downloader._start_since_ms(exchange)  # noqa: SLF001
+        if align_index is not None and len(align_index) > 0:
+            window_start = align_index.min()
+            window_end = align_index.max()
+            since = int(window_start.timestamp() * 1000)
+            until_ts = window_end
+            target = downloader._bars_in_window(window_start, window_end)  # noqa: SLF001
+        else:
+            since = downloader._start_since_ms(exchange)  # noqa: SLF001
+            until_ts = None
+            target = downloader._default_bar_count()  # noqa: SLF001
         limit = 1000
         partial: pd.DataFrame | None = None
-        target = downloader._default_bar_count()  # noqa: SLF001
 
-        while partial is None or len(partial) < target:
+        while True:
+            if until_ts is not None and partial is not None and partial.index.max() >= until_ts:
+                break
+            if until_ts is None and partial is not None and len(partial) >= target:
+                break
             batch = exchange.fetch_ohlcv(spot_symbol, timeframe=timeframe, since=since, limit=limit)
             if not batch:
                 break
@@ -253,13 +313,16 @@ def _load_spot_close(
         if partial is None or partial.empty:
             return None
 
+        if until_ts is not None:
+            partial = partial.loc[partial.index <= until_ts]
+
         spot_close = partial["close"].rename("spot_close")
         cache.parent.mkdir(parents=True, exist_ok=True)
         spot_close.to_frame().to_parquet(cache)
         return spot_close
     except Exception as exc:  # noqa: BLE001
         logger.info("Spot OHLCV download failed for %s: %s", spot_symbol, exc)
-        return _spot_from_context_downloader(spot_symbol, config, downloader, cache)
+        return _spot_from_context_downloader(spot_symbol, config, downloader, cache, align_index=align_index)
 
 
 def _spot_from_context_downloader(
@@ -267,6 +330,9 @@ def _spot_from_context_downloader(
     config: AppConfig,
     downloader: HistoricalDownloader,
     cache: Path,
+    *,
+    align_index: pd.DatetimeIndex | None = None,
+    fetch_if_missing: bool = True,
 ) -> pd.Series | None:
     """Fallback: reuse the main downloader with spot market type override."""
     if spot_symbol != config.primary_symbol:
@@ -277,7 +343,12 @@ def _spot_from_context_downloader(
         spot_cfg.data.exchange = config.data.spot_exchange
         from epoch_ai.data.downloader import HistoricalDownloader as HD
 
-        spot_df = HD(spot_cfg).load_or_download(spot_symbol, skip_enrichment=True)
+        spot_df = HD(spot_cfg).load_or_download(
+            spot_symbol,
+            align_index=align_index,
+            skip_enrichment=True,
+            fetch_if_missing=fetch_if_missing,
+        )
         if spot_df.empty:
             return None
         spot_close = spot_df["close"].rename("spot_close")

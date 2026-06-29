@@ -77,6 +77,17 @@ def sort_quantile_predictions(preds: np.ndarray, spec: MultiHeadSpec) -> np.ndar
     return out
 
 
+def _stable_sigmoid(logits: np.ndarray) -> np.ndarray:
+    """Sigmoid without ``exp`` overflow for large-magnitude logits."""
+    x = np.asarray(logits, dtype=np.float64)
+    out = np.empty_like(x)
+    pos = x >= 0
+    out[pos] = 1.0 / (1.0 + np.exp(-x[pos]))
+    exp_x = np.exp(x[~pos])
+    out[~pos] = exp_x / (1.0 + exp_x)
+    return out
+
+
 def multi_head_train_loss(
     logits,
     y_true,
@@ -125,7 +136,7 @@ def multi_head_val_loss(
             err = y_np[:, base + k] - logits_np[:, base + k]
             pinballs.append(float(np.maximum(qt * err, (qt - 1.0) * err).mean()))
     dir_idx = spec.direction_index(primary_horizon)
-    probs = 1.0 / (1.0 + np.exp(-logits_np[:, dir_idx]))
+    probs = _stable_sigmoid(logits_np[:, dir_idx])
     dir_loss = float(log_loss(y_np[:, dir_idx], probs, labels=[0, 1]))
     return dir_loss + float(np.mean(pinballs))
 
@@ -144,12 +155,12 @@ def parse_structured_predictions(
         base = spec.head_offset(h)
         dir_logit = logits[:, base + q] if logits.ndim == 2 else float(logits[base + q])
         if logits.ndim == 2:
-            p_up = 1.0 / (1.0 + np.exp(-dir_logit))
+            p_up = _stable_sigmoid(dir_logit)
             rets = {f"q{int(qt * 100)}": logits[:, base + k] for k, qt in enumerate(spec.quantiles)}
             rets["p_up"] = p_up
             rets["exp_return"] = rets.get("q50", logits[:, base + q // 2])
         else:
-            p_up = float(1.0 / (1.0 + np.exp(-dir_logit)))
+            p_up = float(_stable_sigmoid(np.asarray(dir_logit))[0])
             rets = {
                 f"q{int(qt * 100)}": float(logits[base + k]) for k, qt in enumerate(spec.quantiles)
             }

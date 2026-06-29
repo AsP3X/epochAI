@@ -29,5 +29,5 @@ jobs:
 
       - name: Golden smoke (train + live-feed)
         run: |
-          python -m epoch_ai train --bars 2500 --max-steps 2 --set walk_forward.initial_train_period=800 --set walk_forward.max_steps=2
+          python -m epoch_ai train --bars 2500 --max-steps 2 --set walk_forward.initial_train_period=800 --set walk_forward.max_steps=2 --set execution.min_buffer_bars=500
           python -m epoch_ai run --live-feed --bars 2500 --live-bars 20 --set walk_forward.initial_train_period=800 --set execution.min_buffer_bars=800

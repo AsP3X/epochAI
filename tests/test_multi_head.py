@@ -6,9 +6,36 @@ import numpy as np
 import pytest
 
 from epoch_ai.features.pipeline import build_multi_horizon_targets
-from epoch_ai.models.multi_head import MultiHeadSpec, targets_to_matrix
+from epoch_ai.models.multi_head import (
+    MultiHeadSpec,
+    _stable_sigmoid,
+    multi_head_val_loss,
+    targets_to_matrix,
+)
 
 pytest.importorskip("torch")
+
+
+def test_stable_sigmoid_extreme_logits_no_overflow():
+    logits = np.array([-1000.0, 1000.0, 0.0])
+    with np.errstate(over="raise"):
+        probs = _stable_sigmoid(logits)
+    np.testing.assert_allclose(probs, [0.0, 1.0, 0.5], rtol=0, atol=1e-6)
+
+
+def test_multi_head_val_loss_extreme_logits(small_config):
+    small_config.prediction.horizons = [1, 5]
+    small_config.prediction.horizon = 5
+    spec = MultiHeadSpec.from_prediction(small_config.prediction)
+    n = 32
+    logits = np.zeros((n, spec.n_outputs), dtype=np.float64)
+    y = np.zeros((n, spec.n_outputs), dtype=np.float64)
+    dir_idx = spec.direction_index(5)
+    logits[:, dir_idx] = np.linspace(-500.0, 500.0, n)
+    y[:, dir_idx] = np.random.default_rng(0).integers(0, 2, size=n)
+    with np.errstate(over="raise"):
+        loss = multi_head_val_loss(logits, y, spec, primary_horizon=5)
+    assert np.isfinite(loss)
 
 
 def test_targets_to_matrix_shape(market, small_config):

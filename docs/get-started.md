@@ -29,12 +29,27 @@ flowchart LR
   end
 ```
 
+## Step-by-step overview
+
+| Step | Section | Command |
+| --- | --- | --- |
+| 0 | Setup | `pip install …` |
+| 1 | Config | `python -m epoch_ai info` |
+| 2 | **Download data** | `python -m epoch_ai download …` |
+| 3 | Train | `python -m epoch_ai train …` |
+| 4 | Forecast | `python -m epoch_ai predict` |
+| 5 | Run (paper) | `python -m epoch_ai run …` |
+| 6 | Policy (optional) | `python -m epoch_ai train-policy …` |
+| 7 | Improve loop | `retrain` / `auto-retrain` / `schedule-retrain` |
+
+Every train, backtest, run, and predict command reads from the **parquet cache** under
+`artifacts/data/`. Run `download` at least once before your first `train`.
+
 ---
 
 ## 0. One-time setup
 
 ```powershell
-# Windows (from repo root)
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -78,21 +93,120 @@ Key defaults to know before the first train:
 
 ---
 
-## 2. Download history
+## 2. Download market data
 
-Fetches (or synthesizes offline) BTC + context coins, caches parquet under `artifacts/data/`.
+**Required before training.** The downloader fetches OHLCV (and optional context feeds),
+cleans it, and caches parquet files. Later commands (`train`, `run`, `backtest`, …)
+read from that cache — they do not hit the exchange on every run unless the cache is
+missing or you pass `--force`.
+
+### What gets downloaded
+
+With default `config/config.yaml`:
+
+| Layer | Source | Cached as |
+| --- | --- | --- |
+| Primary | BTC/USDT perp (`binanceusdm`) | `artifacts/data/BTC-USDT_1m.parquet` |
+| Context | ETH, SOL, BNB, DOGE 1m OHLCV | Separate parquet per symbol, joined at train time |
+| Derivatives | Funding rate (paginated when available) | Column on primary frame |
+| Sentiment | Crypto Fear & Greed | `fear_greed` column |
+| Basis | Spot BTC/USDT close | `spot_close` / basis features |
+
+Install CCXT for live exchange downloads:
 
 ```powershell
-# Full-ish history cap (adjust --bars or use earliest in config)
-python -m epoch_ai download --bars 16000
+pip install ccxt
+# or: pip install -r requirements-optional.txt
+```
 
-# Fast offline smoke — no context enrichment
+If CCXT fails (geo-block, no network), set `data.use_synthetic_fallback: true` — a
+deterministic synthetic dataset is generated instead so the pipeline still runs.
+
+### Recommended first download
+
+Cap history for a manageable first train (~11 days of 1m bars at 16k):
+
+```powershell
+python -m epoch_ai download --bars 16000
+```
+
+`--bars N` always fetches the **most recent** N bars. If an older cache exists (e.g. from
+an earlier test run starting at 2019), the downloader refreshes from the exchange instead
+of reusing stale timestamps. Context symbols are aligned to the same window as BTC.
+
+Expected log ending:
+
+```text
+Data ready: BTC/USDT | 16000 bars | … -> …
+```
+
+Parquet is written under `artifacts/data/`. Re-running `download` **extends** an existing
+cache forward from the last timestamp instead of starting over.
+
+Context symbols (ETH, SOL, BNB, DOGE) are fetched for the **same timestamp window**
+as the primary frame — not the latest exchange tail — so joins are non-null when BTC
+cache holds an older slice.
+
+### Maximum history (production initial train)
+
+For the full multi-year walk-forward run, omit `--bars` and use earliest start in config
+(`data.historical_start_date: "earliest"`). This can take a long time and significant
+disk (millions of 1m bars × five symbols).
+
+```powershell
+# No --bars: fetch/extend to config limit (can run hours; needs CCXT + disk)
+python -m epoch_ai download
+
+# Same, but ignore cache and re-fetch primary symbol from scratch
+python -m epoch_ai download --force
+```
+
+`evolved_nn` training expects **real** data (`data.use_synthetic_fallback: false` in
+shipped config). Use synthetic only for offline smokes and CI-style plumbing tests.
+
+### Download flags
+
+| Flag / override | Purpose |
+| --- | --- |
+| `--bars N` | Return the **most recent** N bars (cache may hold more) |
+| `--force` | Re-download primary symbol even when parquet exists |
+| `--symbol ETH/USDT` | Override primary symbol for this run |
+| `--set data.use_synthetic_fallback=true` | Offline synthetic when CCXT blocked |
+| `--set data.context_symbols=[]` | Skip context coin fetches (fast smoke) |
+| `--set data.historical_start_date=2019-11-01` | Fixed start instead of earliest |
+
+### Fast offline smoke (no exchange)
+
+```powershell
 python -m epoch_ai download --bars 2000 `
   --set data.use_synthetic_fallback=true `
   --set data.context_symbols=[]
 ```
 
-If CCXT is geo-blocked, synthetic fallback is expected — the pipeline still runs.
+### Refresh before retrain
+
+Re-download the latest candles before each maintenance cycle:
+
+```powershell
+python -m epoch_ai download --bars 16000
+python -m epoch_ai retrain --min-new-samples 50
+```
+
+Or extend toward full history periodically:
+
+```powershell
+python -m epoch_ai download
+```
+
+### Verify cache
+
+```powershell
+# List parquet files (PowerShell)
+Get-ChildItem artifacts\data\*.parquet | Select-Object Name, Length, LastWriteTime
+
+# Tail of primary frame (also printed by download)
+python -m epoch_ai download --bars 500
+```
 
 ---
 
@@ -101,25 +215,72 @@ If CCXT is geo-blocked, synthetic fallback is expected — the pipeline still ru
 This is the **core learning loop**: train on the oldest window → predict the next unseen
 slice → log outcomes → expand the train window → repeat until history is consumed.
 
+**Always pass `--bars`.** With the **default** 1m config (~30-day `initial_train_period`),
+you need about **87,000 raw bars** — not 52,000. Feature warm-up and label filtering
+leave only ~half the download as trainable rows (your 52k run → ~26k resolved vs 43,200
+required).
+
 ```powershell
-python -m epoch_ai train --bars 16000 --log-predictions
+python -m epoch_ai download --bars 87000
+python -m epoch_ai train --log-predictions --set model.device=cuda
+```
+
+After a capped `download`, `train` reads **parquet cache only** — it does **not** hit the
+exchange unless you pass `--refresh-data` or `--full-history`. If `--bars N` exceeds what
+is cached, training fails with a message to run `download --bars N` first.
+
+```powershell
+# Explicit cap (match download) — cache-only, no network
+python -m epoch_ai train --bars 87000 --log-predictions --set model.device=cuda
+
+# Re-fetch from exchange before training (optional)
+python -m epoch_ai train --bars 87000 --refresh-data --log-predictions --set model.device=cuda
+
+# Multi-year production train (slow first run; backfills from exchange start)
+python -m epoch_ai train --full-history --log-predictions --set model.device=cuda
 ```
 
 | Flag | When to use |
 | --- | --- |
-| `--bars N` | Cap history length |
+| `--bars N` | **Required for capped runs** — use N ≥ **87000** with default 1m config |
+| `--refresh-data` | Re-download OHLCV before training (default: cache-only) |
+| `--full-history` | Backfill multi-year history from exchange start (slow) |
 | `--max-steps N` | Cap walk-forward iterations (smokes) |
 | `--log-predictions` | Write OOS predictions + outcomes to SQLite (needed for `retrain`) |
 | `--fresh` | Delete checkpoint and restart from step 0 |
 | `--no-resume` | Ignore checkpoint but keep the file |
 | `--set model.evolution.fast_fit=true` | Skip evolution for a quick plumbing test |
 
-**Fast smoke** (minutes, not hours):
+**Fast smoke** (minutes, not hours — override the large production windows):
 
 ```powershell
 python -m epoch_ai download --bars 8000
-python -m epoch_ai train --bars 8000 --max-steps 12 --log-predictions
+
+python -m epoch_ai train --bars 8000 --max-steps 12 --log-predictions `
+  --set walk_forward.initial_train_period=800 `
+  --set walk_forward.step_size=200 `
+  --set execution.min_buffer_bars=500 `
+  --set model.evolution.fast_fit=true
 ```
+
+With CUDA:
+
+```powershell
+python -m epoch_ai train --bars 8000 --max-steps 12 --log-predictions `
+  --set walk_forward.initial_train_period=800 `
+  --set execution.min_buffer_bars=500 `
+  --set model.evolution.fast_fit=true `
+  --set model.device=cuda
+```
+
+| Override | Smoke value | Default (production) |
+| --- | --- | --- |
+| `walk_forward.initial_train_period` | `800` | `43200` (~30 days) |
+| `execution.min_buffer_bars` | `500` | `7500` |
+| `--max-steps` | `12` (or `2` for a 30-second plumbing check) | unlimited |
+| `model.evolution.fast_fit` | `true` | `false` |
+
+Minimum `--bars` with smoke overrides is about **1,500**; **8,000** is a comfortable margin.
 
 **GPU** (optional xgboost backend):
 
@@ -141,9 +302,12 @@ Long runs save a checkpoint after each step (`artifacts/checkpoints/walk_forward
 # Resume (default behaviour)
 python -m epoch_ai train --log-predictions
 
-# Watch progress without training
+# Watch progress without training (reads checkpoint/registry; no network)
 python -m epoch_ai progress
 python -m epoch_ai progress --watch --interval 5
+
+# Recount resolved rows from parquet cache only (slow; still no download)
+python -m epoch_ai progress --refresh-rows --bars 87000
 
 # Start completely over
 python -m epoch_ai train --fresh --log-predictions
@@ -367,8 +531,11 @@ pip install -r requirements.txt -r requirements-dev.txt torch
 # Configure check
 python -m epoch_ai info
 
-# Initial train
+# Download market data (required before train)
+pip install ccxt
 python -m epoch_ai download --bars 16000
+
+# Initial train
 python -m epoch_ai train --bars 16000 --log-predictions
 
 # Verify
@@ -392,7 +559,7 @@ python -m epoch_ai auto-retrain
 | Command | Purpose |
 | --- | --- |
 | `info` | Print resolved YAML config |
-| `download` | Cache OHLCV (+ context) parquet |
+| **`download`** | **Fetch/cache OHLCV + context to `artifacts/data/` (run before train)** |
 | `train` | **Primary** progressive walk-forward train + registry |
 | `progress` / `checkpoint status` | Walk-forward position; `--watch` for live TUI |
 | `checkpoint seed` | Create resume file from a legacy stopped run |
