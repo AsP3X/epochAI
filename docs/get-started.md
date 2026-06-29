@@ -289,6 +289,41 @@ python -m epoch_ai train --bars 16000 --log-predictions `
   --set model.backend=xgboost --set model.device=cuda
 ```
 
+### Tune MLP depth (`evolved_nn`)
+
+Default search uses 1–3 hidden layers and widths 32–512. To test deeper networks,
+raise the depth floor/ceiling or pin a seed architecture (see comment block under
+`model.nn` in `config/config.yaml`).
+
+**Bias evolution toward depth** (YAML or CLI):
+
+```powershell
+python -m epoch_ai train --bars 87000 --log-predictions --set model.device=cuda `
+  --set model.nn.min_layers=4 `
+  --set model.nn.max_layers=6 `
+  --set model.nn.hidden_size_max=1024
+```
+
+**Lock a specific architecture** (evolution mutates around it; set `min_layers` =
+`max_layers` = layer count to freeze depth):
+
+```powershell
+python -m epoch_ai train --bars 87000 --log-predictions --set model.device=cuda `
+  --set model.nn.fixed_hidden_sizes=[512,384,256,128,64] `
+  --set model.nn.min_layers=5 `
+  --set model.nn.max_layers=5
+```
+
+| Knob | Default | Deep-test example |
+| --- | --- | --- |
+| `model.nn.min_layers` | `1` | `4` |
+| `model.nn.max_layers` | `3` (max 12) | `6` |
+| `model.nn.hidden_size_max` | `512` | `1024` |
+| `model.nn.fixed_hidden_sizes` | `null` | `[512, 384, 256, 128]` |
+
+Deeper nets use more VRAM and train slower — on 24 GB GPUs start with 4–6 layers
+before pushing toward the 12-layer ceiling.
+
 When training completes you should see a summary with `Model version`, walk-forward step
 count, and train rows. Models land in `artifacts/models/v_*/`.
 
