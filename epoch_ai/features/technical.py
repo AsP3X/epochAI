@@ -63,6 +63,21 @@ def _adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return dx.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
 
 
+def _directional_indicators(df: pd.DataFrame, period: int = 14) -> tuple[pd.Series, pd.Series]:
+    up = df["high"].diff()
+    down = -df["low"].diff()
+    plus_dm = np.where((up > down) & (up > 0.0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0.0), down, 0.0)
+    atr = _true_range(df).ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    plus_di = 100.0 * pd.Series(plus_dm, index=df.index).ewm(
+        alpha=1.0 / period, adjust=False, min_periods=period
+    ).mean() / atr.replace(0.0, np.nan)
+    minus_di = 100.0 * pd.Series(minus_dm, index=df.index).ewm(
+        alpha=1.0 / period, adjust=False, min_periods=period
+    ).mean() / atr.replace(0.0, np.nan)
+    return plus_di, minus_di
+
+
 class TechnicalFeatures(FeatureGroup):
     """Trend, momentum and oscillator indicators."""
 
@@ -149,5 +164,76 @@ class TechnicalFeatures(FeatureGroup):
                 self.vwap_window, min_periods=self.vwap_window // 2
             ).std().replace(0.0, np.nan)
             out["ta_obv_z"] = (obv - obv_mean) / obv_std
+
+        # --- Extended momentum, trend quality, and channel position ----------------
+        ret1 = close.pct_change(fill_method=None)
+        out["ta_ret_accel_12"] = close.pct_change(12, fill_method=None) - close.pct_change(
+            12, fill_method=None
+        ).shift(12)
+        out["ta_ret_accel_24"] = close.pct_change(24, fill_method=None) - close.pct_change(
+            24, fill_method=None
+        ).shift(24)
+        for w in (48, 96):
+            rsum = ret1.rolling(w, min_periods=w // 2).sum()
+            rstd = ret1.rolling(w, min_periods=w // 2).std().replace(0.0, np.nan)
+            out[f"ta_momentum_quality_{w}"] = rsum / rstd
+
+        for w in (48,):
+            path = close.diff().abs().rolling(w, min_periods=w // 2).sum()
+            net = (close - close.shift(w)).abs()
+            out[f"ta_efficiency_ratio_{w}"] = net / path.replace(0.0, np.nan)
+
+        plus_di, minus_di = _directional_indicators(df, 14)
+        out["ta_plus_di_14"] = plus_di / 100.0
+        out["ta_minus_di_14"] = minus_di / 100.0
+        out["ta_di_spread_14"] = (plus_di - minus_di) / 100.0
+
+        for w in (12, 24):
+            out[f"ta_roc_{w}"] = close.pct_change(w, fill_method=None)
+
+        for w in (20, 55):
+            hi = df["high"].rolling(w, min_periods=w // 2).max()
+            lo = df["low"].rolling(w, min_periods=w // 2).min()
+            out[f"ta_donchian_pos_{w}"] = (close - lo) / (hi - lo).replace(0.0, np.nan)
+
+        ema20 = close.ewm(span=20, adjust=False, min_periods=20).mean()
+        atr14 = _atr(df, 14)
+        out["ta_keltner_pos_20"] = (close - ema20) / (2.0 * atr14).replace(0.0, np.nan)
+
+        span9 = close.ewm(span=9, adjust=False, min_periods=9).mean()
+        span26 = close.ewm(span=26, adjust=False, min_periods=26).mean()
+        cloud_top = pd.concat([span9, span26], axis=1).max(axis=1)
+        cloud_bot = pd.concat([span9, span26], axis=1).min(axis=1)
+        out["ta_ichimoku_cloud_dist"] = np.where(
+            close > cloud_top,
+            (close - cloud_top) / close,
+            np.where(close < cloud_bot, (close - cloud_bot) / close, 0.0),
+        )
+
+        hl2 = (df["high"] + df["low"]) / 2.0
+        st_atr = _atr(df, 10)
+        upper = hl2 + 3.0 * st_atr
+        lower = hl2 - 3.0 * st_atr
+        out["ta_supertrend_dist"] = np.where(
+            close >= hl2, (close - lower) / close, (close - upper) / close
+        )
+
+        sma10 = close.rolling(10, min_periods=10).mean()
+        sma50 = close.rolling(50, min_periods=50).mean()
+        sma20 = close.rolling(20, min_periods=20).mean()
+        sma200 = close.rolling(200, min_periods=200).mean()
+        out["ta_ma_cross_10_50"] = np.sign(sma10 - sma50)
+        out["ta_ma_cross_20_200"] = np.sign(sma20 - sma200)
+
+        rsi14 = out.get("ta_rsi_14", _rsi(close, 14))
+        out["ta_rsi_divergence_proxy_14"] = rsi14.diff(14) - ret1.rolling(14).sum()
+
+        if vol is not None:
+            vol_ma48 = vol.rolling(48, min_periods=12).mean()
+            out["ta_volume_ma_ratio_48"] = vol / vol_ma48.replace(0.0, np.nan)
+            pvt = (ret1 * vol).cumsum()
+            pvt_mean = pvt.rolling(48, min_periods=12).mean()
+            pvt_std = pvt.rolling(48, min_periods=12).std().replace(0.0, np.nan)
+            out["ta_price_volume_trend_48"] = (pvt - pvt_mean) / pvt_std
 
         return out

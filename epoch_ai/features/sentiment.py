@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from epoch_ai.features._stats import rolling_z
 from epoch_ai.features.base import FeatureGroup
 from epoch_ai.utils.logging import get_logger
 
@@ -30,18 +31,34 @@ class SentimentFeatures(FeatureGroup):
 
         if "fear_greed" in df.columns:
             fg = df["fear_greed"]
-            # Normalise the 0-100 index to [-1, 1] and capture its momentum.
             out["sent_fear_greed"] = fg / 50.0 - 1.0
             out["sent_fear_greed_chg"] = fg.diff()
-            out["sent_fear_greed_z"] = (
-                fg - fg.rolling(96, min_periods=16).mean()
-            ) / fg.rolling(96, min_periods=16).std().replace(0.0, np.nan)
+            out["sent_fear_greed_z"] = rolling_z(fg)
             emitted = True
 
         if "social_volume" in df.columns:
             sv = df["social_volume"]
             sv_ma = sv.rolling(96, min_periods=16).mean()
             out["sent_social_dist"] = sv / sv_ma.replace(0.0, np.nan) - 1.0
+            emitted = True
+
+        if "google_trends_bitcoin" in df.columns:
+            gt = df["google_trends_bitcoin"]
+            out["sent_gtrends"] = gt / 100.0
+            out["sent_gtrends_z"] = rolling_z(gt)
+            emitted = True
+
+        if "funding_weighted_avg" in df.columns:
+            fwa = df["funding_weighted_avg"]
+            out["sent_agg_funding"] = fwa
+            out["sent_agg_funding_z"] = rolling_z(fwa)
+            emitted = True
+
+        if "news_sentiment_score" in df.columns:
+            news = df["news_sentiment_score"]
+            out["sent_news"] = news
+            out["sent_news_ma"] = news.rolling(48, min_periods=8).mean()
+            out["sent_news_z"] = rolling_z(news)
             emitted = True
 
         if not emitted:

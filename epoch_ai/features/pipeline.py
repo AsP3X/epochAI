@@ -51,6 +51,11 @@ class FeaturePipeline:
         if df.empty:
             raise ValueError("Cannot compute features on an empty frame.")
 
+        if self.config.data.synthesize_market_extensions:
+            from epoch_ai.data.market_extensions import extend_market_columns
+
+            df = extend_market_columns(df, seed=self.config.data.synthetic_seed)
+
         frames = [group.compute(df) for group in self.groups]
         if not frames:
             raise ValueError("No feature groups enabled; enable at least one.")

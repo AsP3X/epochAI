@@ -27,9 +27,12 @@ data:
   context_symbols:
     - "ETH/USDT"              # joined as eth_* for cross-asset features
     - "SOL/USDT"              # joined as sol_* (high-beta L1 context for BTC)
+    - "BNB/USDT"              # exchange token / beta basket
+    - "DOGE/USDT"             # retail sentiment proxy
   fetch_fear_greed: true       # Crypto Fear & Greed index (Alternative.me)
   fetch_open_interest: true   # paginated OI history from the exchange
   fetch_spot_basis: true       # spot reference close for deriv_basis features
+  synthesize_market_extensions: true  # proxy columns offline when feeds absent
   spot_exchange: "binance"
   spot_symbol: null            # defaults to primary symbol (BTC/USDT spot)
 
@@ -42,19 +45,21 @@ features:
   derivatives: true
   volatility: true
   time: true
-  cross_asset: true            # ETH/SOL vs BTC relative strength, ratio, correlation, derivatives
+  cross_asset: true            # ETH/SOL/BNB/DOGE vs BTC relative strength, derivatives
   sentiment: true              # joins a `fear_greed` column when present
-  onchain: false               # joins on-chain columns when present (requires external feed)
-  patterns: false              # classic chart-pattern geometry (secondary)
-  manipulation: false          # rug/manipulation proxies from OHLCV+derivatives
-  pattern_lookbacks: [48, 96, 192]
+  onchain: true                # on-chain + token-safety columns (proxies offline)
+  patterns: true               # classic chart-pattern geometry (secondary)
+  manipulation: true           # rug/manipulation proxies from OHLCV+derivatives
+  higher_timeframe: true       # 1h/4h trend context aligned to 15m grid
+  macro: true                  # dominance, stablecoin supply, DXY, VIX, etc.
+  pattern_lookbacks: [24, 48, 96, 192, 384]
   pivot_confirm_bars: 3
+  htf_timeframes: ["1h", "4h"]
   dropna: true
-  # Indicator look-back windows (config-driven; previously hard-coded in code).
-  return_lags: [1, 3, 6, 12, 24, 48]
-  ma_windows: [10, 20, 50, 100, 200]
-  rsi_periods: [7, 14, 28]
-  vol_windows: [12, 24, 48, 96]
+  return_lags: [1, 2, 3, 6, 12, 18, 24, 36, 48, 72, 96]
+  ma_windows: [5, 10, 20, 50, 100, 200]
+  rsi_periods: [7, 14, 21, 28]
+  vol_windows: [6, 12, 24, 48, 96, 192]
 
 # -----------------------------------------------------------------------------
 # Prediction target: direction over a 12-candle (4h) horizon.
@@ -63,7 +68,7 @@ prediction:
   horizon: 12
   task: "classification"
   threshold: 0.0
-  neutral_band: 0.0          # >0 drops |fwd return| within the band (train on decisive moves only)
+  neutral_band: 0.001        # drop near-flat 4h moves; sharper up/down labels
 
 # -----------------------------------------------------------------------------
 # Gradient-boosting model. Backend is pluggable:
@@ -99,7 +104,7 @@ model:
   early_stopping_rounds: 30
   val_fraction: 0.15          # time-ordered tail for early stopping + calibration
   class_weight: balanced      # derive scale_pos_weight from label balance ("none" to disable)
-  calibration: sigmoid       # post-hoc probability calibration: isotonic | sigmoid | none
+  calibration: isotonic       # post-hoc probability calibration: isotonic | sigmoid | none
   refit_full_after_es: true   # after ES picks #rounds, refit on full window (keep freshest bars)
   device: auto                # auto | cpu | gpu | cuda — auto picks CUDA when available
   gpu_platform_id: -1         # OpenCL platform id for LightGBM device=gpu (-1 = auto)
@@ -113,8 +118,8 @@ model:
     feature_fraction: 0.8
     bagging_fraction: 0.8
     bagging_freq: 1
-    lambda_l1: 0.1            # mild L1 regularisation (was 0.0)
-    lambda_l2: 1.0            # mild L2 regularisation (was 0.0)
+    lambda_l1: 0.2            # stronger L1 as feature count grows
+    lambda_l2: 2.0            # stronger L2 as feature count grows
     min_gain_to_split: 0.0
     verbosity: -1
 
@@ -128,7 +133,7 @@ walk_forward:
   step_size: 200               # candles predicted + ingested per iteration
   retrain_frequency: 5         # evolved_nn: 5 balances cost; use 1 to retrain every step
   expanding: true              # expanding window = full accumulated history
-  recency_half_life: 2000      # decay sample weights so recent regimes matter more
+  recency_half_life: 5000      # decay sample weights so recent regimes matter more
   embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)
   max_steps: null              # cap iterations for quick demos (null = full run)
   checkpoint_enabled: true     # save progress each step; `train --resume` continues

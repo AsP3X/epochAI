@@ -24,6 +24,8 @@ from epoch_ai.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+_COMPILE_SKIP_LOGGED = False
+
 _thread_local = threading.local()
 
 
@@ -135,14 +137,35 @@ def build_mlp(input_dim: int, genome: NNGenome, *, task: str):
     return nn.Sequential(*layers)
 
 
+def _triton_available() -> bool:
+    """Return whether Triton is importable (required by torch.compile on CUDA)."""
+    try:
+        import triton  # noqa: F401, PLC0415
+
+        return True
+    except ImportError:
+        return False
+
+
 def _maybe_compile(model, config: ModelConfig, device):
     """Apply ``torch.compile`` on CUDA when configured and supported.
 
-    Restricted to CUDA: ``torch.compile`` compiles lazily on first forward, so a CPU/mac
-    backend failure would surface inside the training loop (not here) and the speedup is
-    a CUDA-focused win anyway.
+    Restricted to CUDA on the **main thread** only: parallel evolution trains candidates
+    in a thread pool, and torch.compile/dynamo is not safe across worker threads (and
+    fails on Windows with FX tracing errors even when Triton is installed).
     """
     if not config.nn.torch_compile or getattr(device, "type", "") != "cuda":
+        return model
+    if threading.current_thread() is not threading.main_thread():
+        return model
+    if not _triton_available():
+        global _COMPILE_SKIP_LOGGED
+        if not _COMPILE_SKIP_LOGGED:
+            logger.info(
+                "torch.compile disabled for evolved_nn: Triton is not installed "
+                "(common on Windows CUDA builds)."
+            )
+            _COMPILE_SKIP_LOGGED = True
         return model
     torch, _ = _import_torch()
     compile_fn = getattr(torch, "compile", None)

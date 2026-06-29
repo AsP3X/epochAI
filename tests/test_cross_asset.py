@@ -88,7 +88,8 @@ def test_enrich_skips_primary_symbol(tmp_path):
     btc = _ohlcv(50, start="2020-01-01", base=10000.0)
     # The only configured context symbol equals the primary symbol -> nothing to join.
     out = enrich_primary_market(btc, config, downloader)
-    assert not any(c.startswith("btc_") for c in out.columns)
+    # Context join uses btc_close/eth_close-style names, not macro columns like btc_dominance.
+    assert "btc_close" not in out.columns
 
 
 def test_cross_asset_feature_group_emits_when_columns_present():

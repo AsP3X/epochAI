@@ -153,4 +153,44 @@ class CrossAssetFeatures(FeatureGroup):
                 "CrossAssetFeatures found no context columns (e.g. 'eth_close'); "
                 "enable data.context_symbols and re-download."
             )
+            return out
+
+        # Basket / dispersion features across all joined context assets.
+        ctx_rets: list[pd.Series] = []
+        fundings: list[pd.Series] = []
+        oi_chgs: list[pd.Series] = []
+        for sym in self.context_symbols:
+            pfx = asset_prefix(sym)
+            close_col = f"{pfx}_close"
+            if close_col not in df.columns:
+                continue
+            ctx_close = df[close_col]
+            ctx_ret = ctx_close.pct_change(fill_method=None)
+            ctx_rets.append(ctx_ret)
+            beta_cov = btc_ret.rolling(48, min_periods=24).cov(ctx_ret)
+            ctx_var = ctx_ret.rolling(48, min_periods=24).var().replace(0.0, np.nan)
+            out[f"xasset_{pfx}_beta_48"] = beta_cov / ctx_var
+            out[f"xasset_{pfx}_lead_lag_6"] = ctx_ret.shift(6).rolling(
+                48, min_periods=24
+            ).corr(btc_ret)
+            btc_vol = btc_ret.rolling(48, min_periods=24).std()
+            ctx_vol = ctx_ret.rolling(48, min_periods=24).std()
+            out[f"xasset_{pfx}_vol_ratio"] = ctx_vol / btc_vol.replace(0.0, np.nan)
+            if f"{pfx}_funding_rate" in df.columns:
+                fundings.append(df[f"{pfx}_funding_rate"])
+            if f"{pfx}_open_interest" in df.columns:
+                oi_chgs.append(df[f"{pfx}_open_interest"].pct_change(fill_method=None))
+
+        if ctx_rets:
+            basket = sum(ctx_rets) / len(ctx_rets)
+            out["xasset_basket_ret_24"] = basket.rolling(24, min_periods=12).sum()
+            up_frac = sum((r > 0).astype(float) for r in ctx_rets) / len(ctx_rets)
+            out["xasset_alt_breadth"] = up_frac.rolling(24, min_periods=12).mean()
+        if fundings and btc_funding is not None:
+            all_f = pd.concat([btc_funding, *fundings], axis=1)
+            out["xasset_funding_dispersion"] = all_f.std(axis=1)
+        if oi_chgs and btc_oi is not None:
+            all_oi = pd.concat([btc_oi.pct_change(fill_method=None), *oi_chgs], axis=1)
+            out["xasset_oi_dispersion"] = all_oi.std(axis=1)
+
         return out

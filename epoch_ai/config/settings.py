@@ -68,6 +68,13 @@ class DataConfig(BaseModel):
         default=None,
         description="Spot symbol for basis; defaults to the primary symbol.",
     )
+    synthesize_market_extensions: bool = Field(
+        default=True,
+        description=(
+            "Synthesise derived/macro/on-chain proxy columns when absent so the "
+            "full feature set is available offline (synthetic fallback, tests)."
+        ),
+    )
 
     # Sentinel values that mean "start from the exchange's first available candle".
     _EARLIEST_SENTINELS = {"earliest", "auto", "all", "max", ""}
@@ -109,7 +116,20 @@ class FeatureConfig(BaseModel):
         default=False,
         description="Enable rug-pull/manipulation proxy features from OHLCV and derivatives.",
     )
+    higher_timeframe: bool = Field(
+        default=True,
+        description="Enable higher-timeframe (1h/4h) context features on the bar grid.",
+    )
+    macro: bool = Field(
+        default=True,
+        description="Enable macro/cross-market features (dominance, DXY, VIX, etc.).",
+    )
     dropna: bool = True
+
+    htf_timeframes: list[str] = Field(
+        default_factory=lambda: ["1h", "4h"],
+        description="Higher-timeframe rules passed to pandas resample (e.g. 1h, 4h).",
+    )
 
     # Indicator look-back windows (config-driven; consumed by the feature groups).
     return_lags: list[int] = Field(
@@ -152,6 +172,8 @@ class FeatureConfig(BaseModel):
             values = getattr(self, name)
             if not values or any(int(v) < 1 for v in values):
                 raise ValueError(f"features.{name} must be a non-empty list of positive ints.")
+        if not self.htf_timeframes:
+            raise ValueError("features.htf_timeframes must be a non-empty list.")
         return self
 
 

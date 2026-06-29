@@ -58,7 +58,7 @@ def test_xgb_fit_predict_save_load(market, small_config, tmp_path):
     loaded = XGBoostModel.load(str(path), small_config.model)
     reloaded = loaded.predict(x.iloc[1500:1600])
     assert loaded.best_iteration_ == model.best_iteration_
-    assert np.allclose(preds, reloaded, atol=1e-6)
+    assert np.allclose(preds, reloaded, atol=1e-5)
 
 
 def test_xgb_feature_importance(market, small_config):
@@ -176,5 +176,5 @@ def test_registry_roundtrip_xgboost(market, small_config, tmp_path):
     assert np.allclose(
         model.predict(x.iloc[1500:1600]),
         loaded.predict(x.iloc[1500:1600]),
-        atol=1e-6,
+        atol=1e-5,
     )

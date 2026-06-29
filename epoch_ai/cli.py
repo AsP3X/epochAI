@@ -195,6 +195,36 @@ def cmd_checkpoint_seed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_checkpoint_refresh(args: argparse.Namespace) -> int:
+    """Refresh checkpoint fingerprint after resume-safe config changes."""
+    from epoch_ai.learning.checkpoint import (
+        load_checkpoint,
+        refresh_checkpoint_fingerprint,
+        resolve_checkpoint_path,
+    )
+    from epoch_ai.learning.progress_report import count_resolved_rows
+
+    config = _load(args)
+    path = resolve_checkpoint_path(config)
+    state = load_checkpoint(path)
+    if state is None:
+        logger.error("No checkpoint at %s", path)
+        return 1
+    _, n_features = count_resolved_rows(config, n_bars=args.bars)
+    refreshed = refresh_checkpoint_fingerprint(path, config, n_features)
+    if refreshed is None:
+        logger.error(
+            "Checkpoint at %s is not compatible with current config/features.", path
+        )
+        return 1
+    print(f"Checkpoint refreshed: {path}")
+    print(f"  step          : {refreshed.step_idx}")
+    print(f"  cutoff        : {refreshed.cutoff}")
+    print(f"  model_version : {refreshed.model_version}")
+    print(f"  fingerprint   : {refreshed.fingerprint}")
+    return 0
+
+
 def cmd_progress(args: argparse.Namespace) -> int:
     """Print walk-forward training position without running inference."""
     from epoch_ai.learning.progress_report import (
@@ -1093,6 +1123,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ckpt_seed.add_argument("--bars", type=int, default=None, help="Optional bar cap.")
     p_ckpt_seed.set_defaults(func=cmd_checkpoint_seed)
+    p_ckpt_refresh = p_ckpt_sub.add_parser(
+        "refresh",
+        help="Refresh checkpoint fingerprint after resume-safe config changes.",
+        parents=[parent],
+    )
+    p_ckpt_refresh.add_argument("--bars", type=int, default=None, help="Optional bar cap.")
+    p_ckpt_refresh.set_defaults(func=cmd_checkpoint_refresh)
     p_ckpt_status = p_ckpt_sub.add_parser(
         "status",
         help="Show walk-forward progress from the checkpoint (alias for progress).",

@@ -123,6 +123,27 @@ def test_parallel_evolution_completes(market, small_config):
     assert model.genome_ is not None
 
 
+def test_maybe_compile_skips_worker_threads(small_config):
+    """Parallel evolution must not torch.compile inside thread-pool workers."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from epoch_ai.models.nn_genome import default_genome
+    from epoch_ai.models.nn_trainer import _maybe_compile, build_mlp, resolve_device
+
+    cfg = _evolved_config(small_config)
+    cfg.model.nn.torch_compile = True
+    device = resolve_device(cfg.model)
+    genome = default_genome(cfg.model.nn)
+
+    def _worker():
+        base = build_mlp(8, genome, task="classification").to(device)
+        compiled = _maybe_compile(base, cfg.model, device)
+        return compiled is base
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert pool.submit(_worker).result()
+
+
 def test_state_dict_keys_have_no_compile_prefix(market, small_config):
     """torch.compile wraps modules in _orig_mod; saved weights must stay prefix-free."""
     cfg = _evolved_config(small_config)

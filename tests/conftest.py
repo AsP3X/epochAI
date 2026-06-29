@@ -22,7 +22,7 @@ _DOWNLOADER_INTEGRATION_MODULES = frozenset(
 @pytest.fixture(scope="session")
 def market() -> pd.DataFrame:
     """A reproducible synthetic market with derivatives context."""
-    return generate_synthetic_ohlcv(timeframe="15m", start="2020-01-01", n_bars=4000, seed=11)
+    return generate_synthetic_ohlcv(timeframe="15m", start="2020-01-01", n_bars=8000, seed=11)
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +65,14 @@ def small_config() -> AppConfig:
             "symbols": ["BTC/USDT"],
             "timeframe": "15m",
             "prediction": {"horizon": 8},
+            "data": {"synthesize_market_extensions": False},
+            "features": {
+                "higher_timeframe": False,
+                "macro": False,
+                "onchain": False,
+                "patterns": False,
+                "manipulation": False,
+            },
             "model": {
                 "backend": "lightgbm",
                 "num_boost_round": 40,

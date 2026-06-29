@@ -70,6 +70,11 @@ def enrich_primary_market(
     if data_cfg.fetch_spot_basis and data_cfg.market_type == "future":
         out = _join_spot_reference(out, config, downloader)
 
+    if data_cfg.synthesize_market_extensions:
+        from epoch_ai.data.market_extensions import extend_market_columns
+
+        out = extend_market_columns(out, seed=data_cfg.synthetic_seed)
+
     return out
 
 

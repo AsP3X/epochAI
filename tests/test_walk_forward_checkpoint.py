@@ -6,6 +6,7 @@ import pytest
 
 from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.learning.checkpoint import (
+    WalkForwardCheckpoint,
     build_checkpoint,
     checkpoint_fingerprint,
     clear_checkpoint,
@@ -38,7 +39,7 @@ def test_checkpoint_round_trip(tmp_path, small_config):
     assert loaded.fingerprint == checkpoint_fingerprint(small_config, 42)
 
 
-def test_validate_rejects_config_mismatch(tmp_path, small_config):
+def test_validate_rejects_feature_mismatch(tmp_path, small_config):
     small_config.walk_forward.checkpoint_path = str(tmp_path / "wf.json")
     state = build_checkpoint(
         step_idx=1,
@@ -51,6 +52,53 @@ def test_validate_rejects_config_mismatch(tmp_path, small_config):
     validate_checkpoint(state, small_config, 10, 4000)
     with pytest.raises(ValueError, match="does not match"):
         validate_checkpoint(state, small_config, 11, 4000)
+
+
+def test_legacy_fingerprint_still_resumes(tmp_path, small_config):
+    from epoch_ai.learning.checkpoint import legacy_checkpoint_fingerprint
+
+    small_config.walk_forward.checkpoint_path = str(tmp_path / "wf.json")
+    small_config.walk_forward.retrain_frequency = 5
+    legacy_fp = legacy_checkpoint_fingerprint(small_config, 10, retrain_frequency=1)
+    state = WalkForwardCheckpoint(
+        step_idx=3,
+        cutoff=1600,
+        model_version="v_3",
+        fingerprint=legacy_fp,
+        symbol=small_config.primary_symbol,
+        resolved_rows=4000,
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    validate_checkpoint(state, small_config, 10, 4000)
+
+
+def test_refresh_checkpoint_fingerprint(tmp_path, small_config):
+    from epoch_ai.learning.checkpoint import (
+        legacy_checkpoint_fingerprint,
+        refresh_checkpoint_fingerprint,
+    )
+
+    path = tmp_path / "wf.json"
+    small_config.walk_forward.checkpoint_path = str(path)
+    legacy_fp = legacy_checkpoint_fingerprint(
+        small_config, 10, retrain_frequency=1
+    )
+    save_checkpoint(
+        path,
+        WalkForwardCheckpoint(
+            step_idx=50,
+            cutoff=12000,
+            model_version="v_50",
+            fingerprint=legacy_fp,
+            symbol=small_config.primary_symbol,
+            resolved_rows=4000,
+            updated_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    refreshed = refresh_checkpoint_fingerprint(path, small_config, 10)
+    assert refreshed is not None
+    assert refreshed.fingerprint == checkpoint_fingerprint(small_config, 10)
+    assert load_checkpoint(path).fingerprint == checkpoint_fingerprint(small_config, 10)
 
 
 def test_train_resume_continues_from_checkpoint(market, small_config, tmp_path):

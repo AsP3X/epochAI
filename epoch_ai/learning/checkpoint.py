@@ -43,7 +43,11 @@ def resolve_checkpoint_path(config: AppConfig) -> Path:
 
 
 def checkpoint_fingerprint(config: AppConfig, n_features: int) -> str:
-    """Hash walk-forward settings so resume rejects incompatible config changes."""
+    """Hash resume-critical settings so incompatible config changes are rejected.
+
+    ``retrain_frequency`` is intentionally excluded: it only affects future retrains,
+    not step index / cutoff / feature alignment.
+    """
     wf = config.walk_forward
     payload = {
         "symbol": config.primary_symbol,
@@ -55,13 +59,78 @@ def checkpoint_fingerprint(config: AppConfig, n_features: int) -> str:
         "walk_forward": {
             "initial_train_period": wf.initial_train_period,
             "step_size": wf.step_size,
-            "retrain_frequency": wf.retrain_frequency,
             "expanding": wf.expanding,
             "embargo": wf.embargo,
         },
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return digest[:16]
+
+
+def legacy_checkpoint_fingerprint(
+    config: AppConfig,
+    n_features: int,
+    *,
+    retrain_frequency: int,
+) -> str:
+    """Pre-v2 fingerprint that included ``retrain_frequency`` (for resume migration)."""
+    wf = config.walk_forward
+    payload = {
+        "symbol": config.primary_symbol,
+        "timeframe": config.timeframe,
+        "horizon": config.prediction.horizon,
+        "task": config.prediction.task,
+        "model_backend": config.model.backend,
+        "n_features": n_features,
+        "walk_forward": {
+            "initial_train_period": wf.initial_train_period,
+            "step_size": wf.step_size,
+            "retrain_frequency": retrain_frequency,
+            "expanding": wf.expanding,
+            "embargo": wf.embargo,
+        },
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    return digest[:16]
+
+
+def checkpoint_fingerprint_matches(
+    state: WalkForwardCheckpoint,
+    config: AppConfig,
+    n_features: int,
+) -> bool:
+    """Return ``True`` when ``state.fingerprint`` matches current or legacy formats."""
+    if state.fingerprint == checkpoint_fingerprint(config, n_features):
+        return True
+    wf = config.walk_forward
+    legacy_candidates = {
+        legacy_checkpoint_fingerprint(config, n_features, retrain_frequency=wf.retrain_frequency),
+        legacy_checkpoint_fingerprint(config, n_features, retrain_frequency=1),
+        legacy_checkpoint_fingerprint(config, n_features, retrain_frequency=5),
+    }
+    return state.fingerprint in legacy_candidates
+
+
+def refresh_checkpoint_fingerprint(
+    path: Path,
+    config: AppConfig,
+    n_features: int,
+) -> WalkForwardCheckpoint | None:
+    """Rewrite ``path`` with the current fingerprint when resume-critical fields still match."""
+    state = load_checkpoint(path)
+    if state is None:
+        return None
+    if state.fingerprint == checkpoint_fingerprint(config, n_features):
+        return state
+    if not checkpoint_fingerprint_matches(state, config, n_features):
+        return None
+    state.fingerprint = checkpoint_fingerprint(config, n_features)
+    save_checkpoint(path, state)
+    logger.info(
+        "Refreshed walk-forward checkpoint fingerprint at step %d (resume-safe config change).",
+        state.step_idx,
+    )
+    return state
 
 
 def save_checkpoint(path: Path, state: WalkForwardCheckpoint) -> None:
@@ -114,11 +183,16 @@ def validate_checkpoint(
 ) -> None:
     """Raise ``ValueError`` when ``state`` cannot be resumed safely."""
     expected = checkpoint_fingerprint(config, n_features)
-    if state.fingerprint != expected:
+    if not checkpoint_fingerprint_matches(state, config, n_features):
         raise ValueError(
             "Walk-forward checkpoint does not match current config/features "
             f"(checkpoint={state.fingerprint}, current={expected}). "
-            "Run with --fresh to start over."
+            "Restore matching config or run `python -m epoch_ai checkpoint refresh`."
+        )
+    if state.fingerprint != expected:
+        logger.warning(
+            "Checkpoint fingerprint uses a legacy format (resume-safe); "
+            "it will be refreshed on the next saved step."
         )
     if state.symbol != config.primary_symbol:
         raise ValueError(

@@ -55,14 +55,19 @@ def test_pattern_features_no_future_leak(market, small_config):
     """Features at timestamp t depend only on OHLCV up to t (not later bars)."""
     small_config.features.patterns = True
     small_config.features.cross_asset = False
+    small_config.features.higher_timeframe = False
+    small_config.features.macro = False
+    small_config.features.onchain = False
+    small_config.data.synthesize_market_extensions = False
     pipe = FeaturePipeline(small_config)
     full = pipe.transform(market.copy(), log_stats=False)
     t_pos = len(market) // 2
-    ts = market.index[t_pos]
-    # Extend past ts so swing confirmation is not masked at the live edge.
     truncated = market.iloc[: t_pos + 50].copy()
     partial = pipe.transform(truncated, log_stats=False)
     pat_cols = [c for c in full.columns if c.startswith("pat_")]
+    common = full.index.intersection(partial.index)
+    assert len(common) > 0
+    ts = common[len(common) // 2]
     pd.testing.assert_series_equal(
         full.loc[ts, pat_cols],
         partial.loc[ts, pat_cols],

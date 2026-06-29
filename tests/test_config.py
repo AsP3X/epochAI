@@ -162,12 +162,18 @@ def test_invalid_val_fraction_rejected():
 def test_shipped_config_yaml_loads():
     """The example config must resolve with the new keys."""
     config = load_config("config/config.yaml")
-    assert config.model.calibration == "sigmoid"
-    assert config.walk_forward.recency_half_life == 2000
+    assert config.model.calibration == "isotonic"
+    assert config.walk_forward.recency_half_life == 5000
+    assert config.prediction.neutral_band == 0.001
     assert "ETH/USDT" in config.data.context_symbols
     assert "SOL/USDT" in config.data.context_symbols
+    assert "BNB/USDT" in config.data.context_symbols
     assert config.features.cross_asset is True
     assert config.features.sentiment is True
+    assert config.features.patterns is True
+    assert config.features.manipulation is True
+    assert config.features.higher_timeframe is True
+    assert config.features.onchain is True
     assert config.risk.long_threshold == 0.58
     assert config.risk.short_threshold == 0.42
 
@@ -187,6 +193,9 @@ def test_pattern_config_defaults():
     fc = FeatureConfig()
     assert fc.patterns is False
     assert fc.manipulation is False
+    assert fc.higher_timeframe is True
+    assert fc.macro is True
+    assert fc.htf_timeframes == ["1h", "4h"]
     assert fc.pattern_lookbacks == [48, 96, 192]
     assert fc.pivot_confirm_bars == 3
 

@@ -99,4 +99,12 @@ def build_feature_groups(
         from epoch_ai.features.manipulation import ManipulationFeatures
 
         groups.append(ManipulationFeatures())
+    if config.higher_timeframe:
+        from epoch_ai.features.higher_timeframe import HigherTimeframeFeatures
+
+        groups.append(HigherTimeframeFeatures(htf_timeframes=config.htf_timeframes))
+    if config.macro:
+        from epoch_ai.features.macro import MacroFeatures
+
+        groups.append(MacroFeatures())
     return groups
