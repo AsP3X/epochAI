@@ -221,7 +221,14 @@ def test_registry_prune_never_deletes_protected(tmp_path):
     assert "v_2" not in remaining
 
 
-def test_registry_save_auto_prunes(market, small_config, tmp_path):
+def test_registry_next_version_uses_counter(tmp_path):
+    registry = ModelRegistry(str(tmp_path / "models"))
+    assert registry._next_version() == 1
+    assert registry._next_version() == 2
+    assert (tmp_path / "models" / ".registry_next_version.json").exists()
+
+
+def test_registry_save_skips_prune_when_requested(market, small_config, tmp_path):
     small_config.model.model_dir = str(tmp_path / "models")
     small_config.model.retain_versions = 3
     x, y = _xy(market, small_config)
@@ -231,9 +238,15 @@ def test_registry_save_auto_prunes(market, small_config, tmp_path):
         model = LightGBMModel(small_config.model, task="classification")
         model.fit(x.iloc[:end], y.iloc[:end])
         labels.append(
-            registry.save(model, retain_versions=small_config.model.retain_versions)
+            registry.save(
+                model,
+                retain_versions=small_config.model.retain_versions,
+                prune=False,
+            )
         )
 
+    assert len(registry._sorted_version_labels()) == 5
+    registry.prune_old_versions(keep=3, protect=set(labels))
     remaining = registry._sorted_version_labels()
     assert len(remaining) == 3
     assert remaining == labels[-3:]

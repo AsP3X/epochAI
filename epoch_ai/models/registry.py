@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,33 @@ class ModelRegistry:
     def __init__(self, base_dir: str) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def _version_counter_path(self) -> Path:
+        return self.base_dir / ".registry_next_version.json"
+
+    def _scan_max_version(self) -> int:
+        versions = [
+            int(p.name.split("_")[-1])
+            for p in self.base_dir.glob("v_*")
+            if p.name.split("_")[-1].isdigit()
+        ]
+        return max(versions) if versions else 0
+
+    def _next_version(self) -> int:
+        """Allocate the next monotonic version without scanning all ``v_*`` dirs."""
+        counter = self._version_counter_path
+        if counter.exists():
+            try:
+                version = int(json.loads(counter.read_text(encoding="utf-8"))["next"])
+            except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
+                version = self._scan_max_version() + 1
+        else:
+            version = self._scan_max_version() + 1
+        if version < 1:
+            version = 1
+        counter.write_text(json.dumps({"next": version + 1}), encoding="utf-8")
+        return version
 
     @property
     def _pointer_path(self) -> Path:
@@ -88,14 +116,6 @@ class ModelRegistry:
     def resolve_label(self, label: str | None) -> str | None:
         """Resolve an explicit label, else the promoted champion, else the latest."""
         return label or self.promoted_label() or self.latest_label()
-
-    def _next_version(self) -> int:
-        versions = [
-            int(p.name.split("_")[-1])
-            for p in self.base_dir.glob("v_*")
-            if p.name.split("_")[-1].isdigit()
-        ]
-        return (max(versions) + 1) if versions else 1
 
     def _sorted_version_labels(self) -> list[str]:
         """Return ``v_*`` labels sorted by numeric version (oldest first)."""
@@ -153,15 +173,22 @@ class ModelRegistry:
         *,
         retain_versions: int | None = None,
         protect: Iterable[str] | None = None,
+        prune: bool = True,
     ) -> str:
-        """Save ``model`` as a new version and return its version label."""
+        """Save ``model`` as a new version and return its version label.
+
+        Args:
+            prune: When ``False``, skip :meth:`prune_old_versions` (call it once later).
+        """
         version = self._next_version()
         label = f"v_{version}"
         version_dir = self.base_dir / label
         version_dir.mkdir(parents=True, exist_ok=True)
 
         model_file = getattr(model, "MODEL_FILENAME", "model.txt")
+        t0 = time.perf_counter()
         model.save(str(version_dir / model_file))
+        write_s = time.perf_counter() - t0
         meta = {
             "version": version,
             "label": label,
@@ -176,12 +203,21 @@ class ModelRegistry:
             **(metadata or {}),
         }
         (version_dir / "metadata.json").write_text(json.dumps(meta, indent=2, default=str))
-        logger.info("Registered model %s (%d features).", label, meta["n_features"])
-        if retain_versions is not None and retain_versions > 0:
+        logger.info(
+            "Registered model %s (%d features, wrote %.1fs).",
+            label,
+            meta["n_features"],
+            write_s,
+        )
+        if retain_versions is not None and retain_versions > 0 and prune:
+            t1 = time.perf_counter()
             self.prune_old_versions(
                 keep=retain_versions,
                 protect=frozenset(protect or ()) | {label},
             )
+            prune_s = time.perf_counter() - t1
+            if prune_s > 0.5:
+                logger.info("Registry pruned old versions in %.1fs.", prune_s)
         return label
 
     def latest_label(self) -> str | None:

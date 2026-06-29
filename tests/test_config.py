@@ -175,6 +175,12 @@ def test_cuda_performance_defaults():
     assert cuda.cudnn_benchmark is True
 
 
+def test_registry_defaults_include_register_each_retrain():
+    model = AppConfig().model
+    assert model.register_each_retrain is True
+    assert model.defer_registry_prune is False
+
+
 def test_evolved_nn_default_retrain_frequency():
     assert AppConfig().walk_forward.retrain_frequency == 5
 

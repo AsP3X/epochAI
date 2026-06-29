@@ -503,10 +503,10 @@ class EvolvedNNModel(BaseModel):
             "multi_head": self.multi_head_spec_.to_dict() if self.multi_head_spec_ else None,
             "primary_horizon": self.primary_horizon_,
         }
-        torch.save(payload, path)
+        torch.save(payload, path, _use_new_zipfile_serialization=True)
 
         path_obj.with_name(path_obj.name + GENOME_SUFFIX).write_text(
-            json.dumps(self.genome_.to_dict(), indent=2),
+            json.dumps(self.genome_.to_dict(), separators=(",", ":")),
             encoding="utf-8",
         )
         scaler = self.scaler_
@@ -517,7 +517,7 @@ class EvolvedNNModel(BaseModel):
                     "scale": scaler.scale_.tolist(),
                     "feature_names": self.feature_names_,
                 },
-                indent=2,
+                separators=(",", ":"),
             ),
             encoding="utf-8",
         )
@@ -529,7 +529,7 @@ class EvolvedNNModel(BaseModel):
         elif self.calibrator_ is not None:
             cal_payload = self.calibrator_.to_dict()
         if cal_payload is not None:
-            sidecar.write_text(json.dumps(cal_payload, indent=2), encoding="utf-8")
+            sidecar.write_text(json.dumps(cal_payload, separators=(",", ":")), encoding="utf-8")
         elif sidecar.exists():
             sidecar.unlink()
 

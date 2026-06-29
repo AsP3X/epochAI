@@ -241,6 +241,8 @@ class ProgressiveLearningEngine:
         model_version = "untrained"
         pred_records: list[dict] = []
         step_records: list[dict] = []
+        registry_labels_saved: list[str] = []
+        registry_protect: set[str] = set()
         resumed_from_step: int | None = None
 
         cutoff = wf.initial_train_period
@@ -339,8 +341,13 @@ class ProgressiveLearningEngine:
                     )
                 else:
                     model.fit(x_train, y_train, sample_weight=weights)
-                if self.registry is not None:
-                    protect_labels: set[str] = set()
+                model_cfg = self.config.model
+                should_register = (
+                    self.registry is not None
+                    and (model_cfg.register_each_retrain or is_final_retrain)
+                )
+                if should_register:
+                    protect_labels: set[str] = set(registry_protect)
                     if wf.checkpoint_enabled:
                         ckpt = load_checkpoint(checkpoint_path)
                         if ckpt is not None and ckpt.model_version:
@@ -356,9 +363,14 @@ class ProgressiveLearningEngine:
                             "quantiles": list(self.config.prediction.quantiles),
                             "n_outputs": self.config.prediction.n_outputs,
                         },
-                        retain_versions=self.config.model.retain_versions,
+                        retain_versions=model_cfg.retain_versions,
                         protect=protect_labels,
+                        prune=not model_cfg.defer_registry_prune,
                     )
+                    registry_labels_saved.append(model_version)
+                    registry_protect.add(model_version)
+                elif self.registry is not None:
+                    model_version = model_version or f"step_{step_idx}"
                 else:
                     model_version = f"step_{step_idx}"
 
@@ -588,6 +600,37 @@ class ProgressiveLearningEngine:
                 model_version=registry_version,
                 n_features=len(feature_cols),
                 resolved_rows=n,
+            )
+
+        model_cfg = self.config.model
+        if (
+            self.registry is not None
+            and model is not None
+            and not model_cfg.register_each_retrain
+        ):
+            protect_labels = set(registry_protect)
+            if wf.checkpoint_enabled:
+                ckpt = load_checkpoint(checkpoint_path)
+                if ckpt is not None and ckpt.model_version:
+                    protect_labels.add(ckpt.model_version)
+            model_version = self.registry.save(
+                model,
+                metadata={"step": step_idx, "final_only": True},
+                retain_versions=model_cfg.retain_versions,
+                protect=protect_labels,
+                prune=not model_cfg.defer_registry_prune,
+            )
+            registry_labels_saved.append(model_version)
+
+        if (
+            self.registry is not None
+            and model_cfg.defer_registry_prune
+            and model_cfg.retain_versions is not None
+            and model_cfg.retain_versions > 0
+        ):
+            self.registry.prune_old_versions(
+                keep=model_cfg.retain_versions,
+                protect=frozenset(registry_protect) | frozenset(registry_labels_saved),
             )
 
         if pred_records:

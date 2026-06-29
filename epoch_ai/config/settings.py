@@ -497,6 +497,10 @@ class ModelConfig(BaseModel):
             :meth:`ModelRegistry.save`, keeping this many recent versions (plus any
             protected labels such as the champion or walk-forward checkpoint model).
             ``None`` disables automatic pruning.
+        register_each_retrain: When ``False``, skip registry writes on intermediate
+            walk-forward retrains and save once at the end (faster on slow disks).
+        defer_registry_prune: When ``True``, defer :meth:`ModelRegistry.prune_old_versions`
+            until the walk-forward loop finishes (one bulk delete instead of per-save).
     """
 
     model_dir: str = "artifacts/models"
@@ -539,6 +543,19 @@ class ModelConfig(BaseModel):
         description=(
             "Auto-prune registry to this many recent v_* versions after each save "
             "(champion and checkpoint models are always kept). None disables pruning."
+        ),
+    )
+    register_each_retrain: bool = Field(
+        default=True,
+        description=(
+            "Write a new registry version on every walk-forward retrain. When false, "
+            "keep the model in memory during the run and register once at the end."
+        ),
+    )
+    defer_registry_prune: bool = Field(
+        default=False,
+        description=(
+            "Defer registry pruning until walk-forward completes (faster on network disks)."
         ),
     )
     params: dict[str, Any] = Field(
