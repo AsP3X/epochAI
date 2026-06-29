@@ -86,7 +86,10 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
   candidates (`model.evolution.parallel_candidates`), caches device tensors across
   genomes, warm-starts retrains from the prior champion genome, gates permutation
   importance to the final walk-forward fit (`model.nn.compute_importance`), and uses
-  mixed precision + optional `torch.compile` on CUDA. Default walk-forward
+  mixed precision + optional `torch.compile` on CUDA. CUDA throughput is config-tuned:
+  `model.evolution.cuda_worker_*` (parallel workers by VRAM tier), `model.nn.cuda_*`
+  (auto batch), and `model.cuda` (TF32/cudnn). Lower caps for weak GPUs via YAML or
+  `--set`. Default walk-forward
   `retrain_frequency` is **5** for evolved_nn (1 for GBM backends). Both GBM backends share balanced class weighting +
   post-hoc probability calibration (`calibration.py`); the calibration sidecar travels
   with the bundle. GPU requests auto-fall back to CPU when the build/host can't satisfy

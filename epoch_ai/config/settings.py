@@ -288,7 +288,45 @@ class EvolutionConfig(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Max parallel candidate trainers (null = auto: ~4 on CUDA, else CPU count)."
+            "Max parallel candidate trainers (null = auto: scales with GPU VRAM on CUDA, "
+            "else CPU count)."
+        ),
+    )
+    cuda_auto_workers: bool = Field(
+        default=True,
+        description=(
+            "When max_workers is null and device is CUDA, pick parallel workers from "
+            "cuda_worker_vram_gb / cuda_worker_caps (clipped by cuda_worker_cap_max). "
+            "When false, use cuda_worker_cap_fallback."
+        ),
+    )
+    cuda_worker_cap_max: int = Field(
+        default=12,
+        ge=1,
+        le=32,
+        description=(
+            "Ceiling on auto-selected parallel evolution workers (lower for weak GPUs, "
+            "e.g. 2 on 4–6 GB cards)."
+        ),
+    )
+    cuda_worker_cap_fallback: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        description="Parallel workers when cuda_auto_workers is false (weak-GPU safe default).",
+    )
+    cuda_worker_vram_gb: list[float] = Field(
+        default_factory=lambda: [8.0, 16.0, 24.0, 40.0],
+        description=(
+            "Ascending VRAM thresholds (GB) for cuda_worker_caps tier lookup when "
+            "cuda_auto_workers is true."
+        ),
+    )
+    cuda_worker_caps: list[int] = Field(
+        default_factory=lambda: [2, 4, 6, 8, 12],
+        description=(
+            "Worker caps paired with cuda_worker_vram_gb: len must be len(vram_gb)+1. "
+            "caps[0] below first tier; caps[i+1] when VRAM >= vram_gb[i]."
         ),
     )
     early_stop_patience: int | None = Field(
@@ -298,6 +336,42 @@ class EvolutionConfig(BaseModel):
             "Stop evolution early after this many generations without best-fitness "
             "improvement (null = run all generations)."
         ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_cuda_worker_tiers(self) -> EvolutionConfig:
+        tiers = self.cuda_worker_vram_gb
+        caps = self.cuda_worker_caps
+        if len(caps) != len(tiers) + 1:
+            raise ValueError(
+                "model.evolution.cuda_worker_caps length must be "
+                "len(cuda_worker_vram_gb) + 1."
+            )
+        if not tiers:
+            raise ValueError("model.evolution.cuda_worker_vram_gb must be non-empty.")
+        if any(t <= 0 for t in tiers):
+            raise ValueError("model.evolution.cuda_worker_vram_gb entries must be > 0.")
+        if any(tiers[i] >= tiers[i + 1] for i in range(len(tiers) - 1)):
+            raise ValueError("model.evolution.cuda_worker_vram_gb must be strictly ascending.")
+        if any(c < 1 for c in caps):
+            raise ValueError("model.evolution.cuda_worker_caps entries must be >= 1.")
+        if self.cuda_worker_cap_fallback > self.cuda_worker_cap_max:
+            raise ValueError(
+                "model.evolution.cuda_worker_cap_fallback must be <= cuda_worker_cap_max."
+            )
+        return self
+
+
+class CudaPerformanceConfig(BaseModel):
+    """CUDA runtime knobs for ``evolved_nn`` (ignored when training on CPU)."""
+
+    allow_tf32: bool = Field(
+        default=True,
+        description="Enable TF32 matmul on NVIDIA Ampere+ (faster, same recipe).",
+    )
+    cudnn_benchmark: bool = Field(
+        default=True,
+        description="Enable cudnn.benchmark for fixed-shape MLP training on CUDA.",
     )
 
 
@@ -330,6 +404,27 @@ class NNConfig(BaseModel):
     )
     max_epochs: int = Field(default=200, ge=10)
     batch_size: int = Field(default=256, ge=16)
+    cuda_auto_batch: bool = Field(
+        default=True,
+        description=(
+            "On CUDA, scale batch size up toward cuda_batch_cap so each epoch has enough "
+            "work to saturate the GPU (same epoch count and early-stopping logic)."
+        ),
+    )
+    cuda_batch_cap: int = Field(
+        default=2048,
+        ge=16,
+        description="Upper bound for auto-scaled CUDA training batches.",
+    )
+    cuda_batches_per_epoch: int = Field(
+        default=32,
+        ge=4,
+        le=512,
+        description=(
+            "Target minibatch steps per epoch when cuda_auto_batch scales batch size up "
+            "(lower = smaller batches, safer on weak GPUs)."
+        ),
+    )
     patience: int = Field(default=15, ge=1, description="Early-stopping patience on val loss.")
     compute_importance: bool = Field(
         default=True,
@@ -385,6 +480,7 @@ class ModelConfig(BaseModel):
             ``"lightgbm"``, or ``"xgboost"`` (optional GBM backends).
         evolution: Evolutionary search knobs (``evolved_nn`` only).
         nn: MLP training limits (``evolved_nn`` only).
+        cuda: CUDA runtime throughput knobs (``evolved_nn`` on GPU only).
         device: ``"auto"`` (default, CUDA when available), ``"cpu"``, ``"gpu"`` or ``"cuda"``.
         gpu_platform_id: OpenCL platform id for LightGBM ``device="gpu"`` (``-1`` = auto).
         gpu_device_id: OpenCL/CUDA device ordinal (``-1`` = auto).
@@ -401,6 +497,7 @@ class ModelConfig(BaseModel):
     )
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     nn: NNConfig = Field(default_factory=NNConfig)
+    cuda: CudaPerformanceConfig = Field(default_factory=CudaPerformanceConfig)
     num_boost_round: int = 300
     early_stopping_rounds: int | None = 30
     val_fraction: float = Field(

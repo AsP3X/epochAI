@@ -104,6 +104,42 @@ def test_importance_skipped_by_default(market, small_config):
     assert model.feature_importance().sum() == 0.0
 
 
+def test_resolve_cuda_worker_cap_from_config():
+    from epoch_ai.config.settings import EvolutionConfig
+    from epoch_ai.models.nn_trainer import resolve_cuda_worker_cap
+
+    evo = EvolutionConfig()
+    assert resolve_cuda_worker_cap(4.0, evo) == 2
+    assert resolve_cuda_worker_cap(10.0, evo) == 4
+    assert resolve_cuda_worker_cap(48.0, evo) == 12
+    evo_weak = EvolutionConfig(cuda_worker_cap_max=2, cuda_worker_caps=[1, 2, 2, 2, 2, 2])
+    assert resolve_cuda_worker_cap(48.0, evo_weak) == 2
+    evo_fixed = EvolutionConfig(cuda_auto_workers=False, cuda_worker_cap_fallback=1)
+    assert resolve_cuda_worker_cap(48.0, evo_fixed) == 1
+    assert resolve_cuda_worker_cap(24.0, evo) == 8
+    assert resolve_cuda_worker_cap(16.0, evo) == 6
+    assert resolve_cuda_worker_cap(8.0, evo) == 4
+
+
+def test_effective_training_batch_size_scales_on_cuda(small_config):
+    from epoch_ai.config.settings import NNConfig
+    from epoch_ai.models.nn_trainer import effective_training_batch_size
+
+    nn = NNConfig(batch_size=256, cuda_auto_batch=True, cuda_batch_cap=2048)
+    cpu_batch = effective_training_batch_size(nn, 40000, object())
+    assert cpu_batch == 256
+    cuda_batch = effective_training_batch_size(nn, 40000, type("D", (), {"type": "cuda"})())
+    assert cuda_batch > 256
+    assert cuda_batch <= 2048
+
+
+def test_evolution_max_workers_respects_explicit_cap(small_config):
+    from epoch_ai.models.nn_trainer import evolution_max_workers
+
+    small_config.model.evolution.max_workers = 2
+    assert evolution_max_workers(small_config.model, 12) == 2
+
+
 def test_resolve_device_auto_defaults_cpu(small_config):
     from epoch_ai.models.nn_trainer import resolve_device
 

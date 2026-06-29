@@ -18,7 +18,7 @@ import numpy as np
 from sklearn.metrics import log_loss, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 
-from epoch_ai.config.settings import ModelConfig
+from epoch_ai.config.settings import EvolutionConfig, ModelConfig
 from epoch_ai.models.multi_head import MultiHeadSpec, multi_head_train_loss, multi_head_val_loss
 from epoch_ai.models.nn_genome import NNGenome
 from epoch_ai.utils.logging import get_logger
@@ -26,6 +26,8 @@ from epoch_ai.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _COMPILE_SKIP_LOGGED = False
+_CUDA_RUNTIME_CONFIGURED = False
+_CUDA_TRAINING_LOGGED = False
 
 _thread_local = threading.local()
 
@@ -93,6 +95,58 @@ def resolve_device(config: ModelConfig):
     return torch.device("cpu")
 
 
+def resolve_cuda_worker_cap(vram_gb: float, evolution: EvolutionConfig) -> int:
+    """Map GPU VRAM (GB) to parallel evolution workers using config tier tables."""
+    if not evolution.cuda_auto_workers:
+        return min(evolution.cuda_worker_cap_fallback, evolution.cuda_worker_cap_max)
+    caps = evolution.cuda_worker_caps
+    tiers = evolution.cuda_worker_vram_gb
+    cap = caps[0]
+    for i, tier in enumerate(tiers):
+        if vram_gb >= tier:
+            cap = caps[i + 1]
+    return min(cap, evolution.cuda_worker_cap_max)
+
+
+def configure_cuda_runtime(device, config: ModelConfig) -> None:
+    """Apply config-driven CUDA matmul/cudnn settings once per process."""
+    global _CUDA_RUNTIME_CONFIGURED
+    if _CUDA_RUNTIME_CONFIGURED or getattr(device, "type", "") != "cuda":
+        return
+    torch, _ = _import_torch()
+    cuda_cfg = config.cuda
+    if cuda_cfg.allow_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    if cuda_cfg.cudnn_benchmark:
+        torch.backends.cudnn.benchmark = True
+    _CUDA_RUNTIME_CONFIGURED = True
+    props = torch.cuda.get_device_properties(device)
+    vram_gb = props.total_memory / (1024**3)
+    logger.info(
+        "CUDA runtime: tf32=%s cudnn.benchmark=%s (%s, %.1f GB VRAM).",
+        cuda_cfg.allow_tf32,
+        cuda_cfg.cudnn_benchmark,
+        props.name,
+        vram_gb,
+    )
+
+
+def effective_training_batch_size(nn_cfg, n_train: int, device) -> int:
+    """Resolve per-epoch minibatch size; scale up on CUDA when auto-batch is enabled."""
+    base = nn_cfg.batch_size
+    if getattr(device, "type", "") != "cuda" or n_train <= 0:
+        return base
+    if not nn_cfg.cuda_auto_batch:
+        return min(base, n_train)
+    # Human: tiny batches leave the GPU idle between kernel launches; target configurable steps.
+    # Agent: READS nn.cuda_batches_per_epoch + cuda_batch_cap; CAUSAL same epoch schedule.
+    target_steps = nn_cfg.cuda_batches_per_epoch
+    scaled = max(base, (n_train + target_steps - 1) // target_steps)
+    scaled = min(scaled, nn_cfg.cuda_batch_cap, n_train)
+    return max(base, scaled)
+
+
 def evolution_max_workers(config: ModelConfig, population_size: int) -> int:
     """Resolve parallel candidate worker count for one evolution generation."""
     evolution = config.evolution
@@ -100,7 +154,13 @@ def evolution_max_workers(config: ModelConfig, population_size: int) -> int:
         return min(evolution.max_workers, population_size)
     device = resolve_device(config)
     if device.type == "cuda":
-        return min(4, population_size)
+        if evolution.cuda_auto_workers:
+            torch, _ = _import_torch()
+            props = torch.cuda.get_device_properties(device)
+            cap = resolve_cuda_worker_cap(props.total_memory / (1024**3), evolution)
+        else:
+            cap = min(evolution.cuda_worker_cap_fallback, evolution.cuda_worker_cap_max)
+        return min(cap, population_size)
     return min(os.cpu_count() or 1, population_size)
 
 
@@ -207,6 +267,7 @@ def build_training_cache(
     """Fit the scaler once and upload train/val tensors for reuse across genomes."""
     torch, _ = _import_torch()
     device = resolve_device(config)
+    configure_cuda_runtime(device, config)
 
     if split is None:
         has_val = 0.0 < val_fraction < 0.5 and len(x) >= 200
@@ -317,6 +378,7 @@ def train_genome(
         )
 
     device = cache.device
+    configure_cuda_runtime(device, config)
     split = cache.split
     scaler = cache.scaler
     y_val = cache.y_val_np
@@ -342,6 +404,17 @@ def train_genome(
         criterion = nn.MSELoss(reduction="none")
 
     use_amp = bool(nn_cfg.mixed_precision and getattr(device, "type", "") == "cuda")
+    train_batch = effective_training_batch_size(nn_cfg, len(x_train_t), device)
+    global _CUDA_TRAINING_LOGGED
+    if getattr(device, "type", "") == "cuda" and not _CUDA_TRAINING_LOGGED:
+        _CUDA_TRAINING_LOGGED = True
+        logger.info(
+            "CUDA training batch_size=%d (config=%d, auto_batch=%s, cap=%d).",
+            train_batch,
+            nn_cfg.batch_size,
+            nn_cfg.cuda_auto_batch,
+            nn_cfg.cuda_batch_cap,
+        )
 
     with _cuda_stream(device):
         # Human: keep the uncompiled module for state I/O; torch.compile wraps it in
@@ -372,8 +445,8 @@ def train_genome(
             model.train()
             n = len(x_train_t)
             indices = torch.randperm(n, device=device)
-            for start in range(0, n, nn_cfg.batch_size):
-                idx = indices[start : start + nn_cfg.batch_size]
+            for start in range(0, n, train_batch):
+                idx = indices[start : start + train_batch]
                 # Human: val tail can leave train_rows % batch_size == 1; BatchNorm rejects N=1.
                 # Agent: SKIP batches smaller than min_batch; CAUSAL no effect at predict time.
                 if len(idx) < min_batch:
@@ -407,7 +480,7 @@ def train_genome(
             if x_val_t is None or y_val_t is None:
                 if epoch + 1 >= min(nn_cfg.max_epochs // 4, 30):
                     best_state = {
-                        k: v.detach().cpu().clone() for k, v in base_model.state_dict().items()
+                        k: v.detach().clone() for k, v in base_model.state_dict().items()
                     }
                     best_epoch = epoch + 1
                     best_val = 0.0
@@ -418,8 +491,8 @@ def train_genome(
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", enabled=use_amp):
                     val_logits = model(x_val_t)
-                val_logits_np = val_logits.cpu().numpy()
                 if multi_head is not None and primary_horizon is not None:
+                    val_logits_np = val_logits.float().cpu().numpy()
                     val_loss = multi_head_val_loss(
                         val_logits_np,
                         y_val,
@@ -427,17 +500,22 @@ def train_genome(
                         primary_horizon=primary_horizon,
                     )
                 elif is_classification:
-                    val_probs = torch.sigmoid(val_logits).cpu().numpy().ravel()
-                    val_loss = log_loss(y_val, val_probs, labels=[0, 1])
+                    val_loss = float(
+                        nn.functional.binary_cross_entropy_with_logits(
+                            val_logits.float(),
+                            y_val_t,
+                            reduction="mean",
+                        )
+                    )
                 else:
-                    val_preds = val_logits_np.ravel()
+                    val_preds = val_logits.float().cpu().numpy().ravel()
                     val_loss = mean_squared_error(y_val, val_preds)
 
             if val_loss + 1e-6 < best_val:
                 best_val = float(val_loss)
                 best_epoch = epoch + 1
                 best_state = {
-                    k: v.detach().cpu().clone() for k, v in base_model.state_dict().items()
+                    k: v.detach().clone() for k, v in base_model.state_dict().items()
                 }
                 patience_left = nn_cfg.patience
             else:
@@ -446,7 +524,7 @@ def train_genome(
                     break
 
         if best_state is None:
-            best_state = {k: v.detach().cpu().clone() for k, v in base_model.state_dict().items()}
+            best_state = {k: v.detach().clone() for k, v in base_model.state_dict().items()}
             best_epoch = max(1, nn_cfg.max_epochs // 4)
 
         if refit_full and split < len(x):
@@ -474,12 +552,13 @@ def train_genome(
             x_full_t = torch.from_numpy(x_full).float().to(device)
             y_full_t = torch.from_numpy(y_full).float().to(device)
             w_full_t = None if w_full is None else torch.from_numpy(w_full).float().to(device)
+            full_batch = effective_training_batch_size(nn_cfg, len(x_full_t), device)
             for _ in range(best_epoch):
                 model.train()
                 n = len(x_full_t)
                 indices = torch.randperm(n, device=device)
-                for start in range(0, n, nn_cfg.batch_size):
-                    idx = indices[start : start + nn_cfg.batch_size]
+                for start in range(0, n, full_batch):
+                    idx = indices[start : start + full_batch]
                     if len(idx) < min_batch:
                         continue
                     optimizer.zero_grad(set_to_none=True)
@@ -501,7 +580,7 @@ def train_genome(
                     loss.backward()
                     optimizer.step()
             scaler = full_scaler
-            best_state = {k: v.detach().cpu().clone() for k, v in base_model.state_dict().items()}
+            best_state = {k: v.detach().clone() for k, v in base_model.state_dict().items()}
 
         if x_val_t is not None and y_val is not None and best_state is not None:
             base_model.load_state_dict(best_state)  # type: ignore[arg-type]
@@ -509,8 +588,8 @@ def train_genome(
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", enabled=use_amp):
                     val_logits = model(x_val_t)
-                val_logits_np = val_logits.cpu().numpy()
                 if multi_head is not None and primary_horizon is not None:
+                    val_logits_np = val_logits.float().cpu().numpy()
                     best_val = multi_head_val_loss(
                         val_logits_np,
                         y_val,
@@ -518,10 +597,15 @@ def train_genome(
                         primary_horizon=primary_horizon,
                     )
                 elif is_classification:
-                    val_probs = torch.sigmoid(val_logits).cpu().numpy().ravel()
-                    best_val = float(log_loss(y_val, val_probs, labels=[0, 1]))
+                    best_val = float(
+                        nn.functional.binary_cross_entropy_with_logits(
+                            val_logits.float(),
+                            y_val_t,
+                            reduction="mean",
+                        )
+                    )
                 else:
-                    val_preds = val_logits_np.ravel()
+                    val_preds = val_logits.float().cpu().numpy().ravel()
                     best_val = float(mean_squared_error(y_val, val_preds))
         elif best_val == float("inf"):
             best_val = 0.0
@@ -529,10 +613,14 @@ def train_genome(
         if getattr(device, "type", "") == "cuda":
             torch.cuda.synchronize(device)
 
+        best_state_cpu = {
+            k: v.detach().cpu().clone() for k, v in best_state.items()
+        }
+
     return TrainResult(
         val_loss=best_val,
         best_epoch=best_epoch,
-        state_dict=best_state,
+        state_dict=best_state_cpu,
         scaler=scaler,
     )
 

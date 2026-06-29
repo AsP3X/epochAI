@@ -214,56 +214,103 @@ class EvolvedNNModel(BaseModel):
                 and max_workers > 1
                 and len(population) > 1
             )
+            logger.info(
+                "evolved_nn evolution: workers=%d population=%d generations=%d parallel=%s",
+                max_workers,
+                evolution.population_size,
+                evolution.generations,
+                use_parallel,
+            )
 
-            for generation in range(evolution.generations):
-                if use_parallel:
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            if use_parallel:
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    for generation in range(evolution.generations):
                         scores = list(pool.map(_train_candidate, population))
-                else:
+
+                        scores.sort(key=lambda item: item[0])
+                        gen_best_loss, gen_best_genome, gen_best_result = scores[0]
+                        logger.info(
+                            "evolved_nn generation=%d best_val_loss=%.5f genome=%s",
+                            generation + 1,
+                            gen_best_loss,
+                            gen_best_genome.hidden_sizes,
+                        )
+                        if gen_best_loss < best_fitness:
+                            best_fitness = gen_best_loss
+                            winning_genome = gen_best_genome
+                            best_trained = gen_best_result
+                            stale_generations = 0
+                        else:
+                            stale_generations += 1
+
+                        if (
+                            evolution.early_stop_patience is not None
+                            and stale_generations >= evolution.early_stop_patience
+                        ):
+                            logger.info(
+                                "evolved_nn early stop: %d generations without improvement.",
+                                stale_generations,
+                            )
+                            break
+
+                        elite_n = max(1, int(evolution.population_size * evolution.elite_fraction))
+                        elites = [g for _, g, _ in scores[:elite_n]]
+                        next_pop: list[NNGenome] = list(elites)
+                        while len(next_pop) < evolution.population_size:
+                            parent = elites[int(rng.integers(0, len(elites)))]
+                            next_pop.append(
+                                mutate_genome(
+                                    parent,
+                                    rng,
+                                    nn_cfg,
+                                    sigma=evolution.mutation_sigma,
+                                )
+                            )
+                        population = next_pop
+            else:
+                for generation in range(evolution.generations):
                     scores = [_train_candidate(genome) for genome in population]
 
-                scores.sort(key=lambda item: item[0])
-                gen_best_loss, gen_best_genome, gen_best_result = scores[0]
-                logger.info(
-                    "evolved_nn generation=%d best_val_loss=%.5f genome=%s",
-                    generation + 1,
-                    gen_best_loss,
-                    gen_best_genome.hidden_sizes,
-                )
-                if gen_best_loss < best_fitness:
-                    best_fitness = gen_best_loss
-                    winning_genome = gen_best_genome
-                    best_trained = gen_best_result
-                    stale_generations = 0
-                else:
-                    stale_generations += 1
-
-                # Human: bail out of evolution once it stops finding better architectures.
-                # Agent: CONFIG evolution.early_stop_patience; null = run all generations.
-                if (
-                    evolution.early_stop_patience is not None
-                    and stale_generations >= evolution.early_stop_patience
-                ):
+                    scores.sort(key=lambda item: item[0])
+                    gen_best_loss, gen_best_genome, gen_best_result = scores[0]
                     logger.info(
-                        "evolved_nn early stop: %d generations without improvement.",
-                        stale_generations,
+                        "evolved_nn generation=%d best_val_loss=%.5f genome=%s",
+                        generation + 1,
+                        gen_best_loss,
+                        gen_best_genome.hidden_sizes,
                     )
-                    break
+                    if gen_best_loss < best_fitness:
+                        best_fitness = gen_best_loss
+                        winning_genome = gen_best_genome
+                        best_trained = gen_best_result
+                        stale_generations = 0
+                    else:
+                        stale_generations += 1
 
-                elite_n = max(1, int(evolution.population_size * evolution.elite_fraction))
-                elites = [g for _, g, _ in scores[:elite_n]]
-                next_pop: list[NNGenome] = list(elites)
-                while len(next_pop) < evolution.population_size:
-                    parent = elites[int(rng.integers(0, len(elites)))]
-                    next_pop.append(
-                        mutate_genome(
-                            parent,
-                            rng,
-                            nn_cfg,
-                            sigma=evolution.mutation_sigma,
+                    if (
+                        evolution.early_stop_patience is not None
+                        and stale_generations >= evolution.early_stop_patience
+                    ):
+                        logger.info(
+                            "evolved_nn early stop: %d generations without improvement.",
+                            stale_generations,
                         )
-                    )
-                population = next_pop
+                        break
+
+                    elite_n = max(1, int(evolution.population_size * evolution.elite_fraction))
+                    elites = [g for _, g, _ in scores[:elite_n]]
+                    next_pop: list[NNGenome] = list(elites)
+                    while len(next_pop) < evolution.population_size:
+                        parent = elites[int(rng.integers(0, len(elites)))]
+                        next_pop.append(
+                            mutate_genome(
+                                parent,
+                                rng,
+                                nn_cfg,
+                                sigma=evolution.mutation_sigma,
+                            )
+                        )
+                    population = next_pop
 
             assert winning_genome is not None and best_trained is not None
             best_genome = winning_genome

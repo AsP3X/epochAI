@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from epoch_ai.config.overrides import apply_overrides, parse_set_args
-from epoch_ai.config.settings import AppConfig, load_config
+from epoch_ai.config.settings import AppConfig, EvolutionConfig, load_config
 
 
 def test_defaults_are_valid():
@@ -154,6 +154,25 @@ def test_evolution_config_defaults():
     assert evo.fast_fit is False
     assert evo.parallel_candidates is True
     assert evo.early_stop_patience is None
+    assert evo.cuda_auto_workers is True
+    assert evo.cuda_worker_cap_max == 12
+    assert len(evo.cuda_worker_caps) == len(evo.cuda_worker_vram_gb) + 1
+
+
+def test_evolution_cuda_worker_tiers_validation():
+    with pytest.raises(ValueError, match="cuda_worker_caps"):
+        EvolutionConfig.model_validate(
+            {
+                "cuda_worker_vram_gb": [8.0, 16.0],
+                "cuda_worker_caps": [2, 4],
+            }
+        )
+
+
+def test_cuda_performance_defaults():
+    cuda = AppConfig().model.cuda
+    assert cuda.allow_tf32 is True
+    assert cuda.cudnn_benchmark is True
 
 
 def test_evolved_nn_default_retrain_frequency():
@@ -173,6 +192,8 @@ def test_nn_performance_defaults():
     assert nn.compute_importance is True
     assert nn.mixed_precision is True
     assert nn.torch_compile is True
+    assert nn.cuda_auto_batch is True
+    assert nn.cuda_batches_per_epoch == 32
 
 
 def test_nn_deep_layers_override_via_cli():

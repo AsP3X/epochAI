@@ -91,8 +91,22 @@ model:
     seed: 42
     fast_fit: false             # true for quick tests / smokes (skips evolution)
     parallel_candidates: true     # train population concurrently
-    max_workers: null             # null = auto (~4 on CUDA, else CPU count)
+  # Parallel evolution workers (CUDA). Pin exactly with max_workers; otherwise auto tiers apply.
+    max_workers: null             # null = auto from VRAM tiers below (clipped by cuda_worker_cap_max)
+    cuda_auto_workers: true       # false => cuda_worker_cap_fallback (sequential-style cap)
+    cuda_worker_cap_max: 12         # ceiling on auto workers (use 2 on 4–6 GB GPUs)
+    cuda_worker_cap_fallback: 2     # when cuda_auto_workers=false
+    cuda_worker_vram_gb: [8, 16, 24, 40]   # ascending GB thresholds
+    cuda_worker_caps: [2, 4, 6, 8, 12]     # len = len(vram_gb)+1; caps[i+1] when VRAM >= tier[i]
     early_stop_patience: null     # stop after N generations w/o improvement (null = off)
+  # Weak GPU example (4–6 GB, e.g. GTX 1650 / T4 with tight VRAM):
+  #   max_workers: 2
+  #   cuda_worker_cap_max: 2
+  #   cuda_auto_batch: false  (under model.nn)
+  #   batch_size: 128
+  # High-end example (A6000 48 GB) — raise caps only if VRAM headroom is comfortable:
+  #   cuda_worker_cap_max: 12
+  #   cuda_batch_cap: 4096
   # ---------------------------------------------------------------------------
   # evolved_nn MLP depth / width (only when backend: evolved_nn).
   # Evolution picks hidden layer count in [min_layers, max_layers] and each
@@ -119,11 +133,18 @@ model:
     hidden_size_max: 512
     fixed_hidden_sizes: null   # e.g. [256, 256, 128, 64] — seed architecture when set
     max_epochs: 200
-    batch_size: 256
+    batch_size: 256               # base batch; CUDA may scale up when cuda_auto_batch=true
+    cuda_auto_batch: true         # scale batches toward cuda_batch_cap on GPU
+    cuda_batch_cap: 2048          # max auto batch (lower on weak GPUs, e.g. 512)
+    cuda_batches_per_epoch: 32    # target steps/epoch when auto-batch scales up
     patience: 15
     compute_importance: true       # permutation importance on final walk-forward fit only
-    mixed_precision: true          # torch.autocast on CUDA
-    torch_compile: true            # torch.compile candidates when PyTorch 2+
+    mixed_precision: true          # torch.autocast on CUDA (disable on very old GPUs if unstable)
+    torch_compile: true            # torch.compile candidates when PyTorch 2+ (main thread)
+  # CUDA runtime (evolved_nn on GPU only; ignored on CPU)
+  cuda:
+    allow_tf32: true               # Ampere+ matmul speedup
+    cudnn_benchmark: true
   num_boost_round: 300
   early_stopping_rounds: 30
   val_fraction: 0.15          # time-ordered tail for early stopping + calibration
