@@ -80,12 +80,52 @@ class FeaturePipeline:
         return features
 
 
-def build_target(df: pd.DataFrame, prediction: PredictionConfig) -> pd.Series:
-    """Build the supervised target aligned to each bar's *entry* time.
+def build_multi_horizon_targets(
+    df: pd.DataFrame, prediction: PredictionConfig
+) -> pd.DataFrame:
+    """Build per-horizon forward-return and direction targets aligned to each bar.
 
-    The target at time ``t`` describes the forward move realised between ``t`` and
-    ``t + horizon`` bars. The final ``horizon`` rows have no realised future and are
-    therefore ``NaN`` (they become live, not-yet-resolved predictions).
+    For each horizon ``h`` in ``prediction.horizons`` the frame contains:
+
+    - ``ret_{h}``: forward log return ``log(close[t+h] / close[t])`` (quantile target).
+    - ``target_{h}``: classification label or regression return for that horizon.
+
+    The final ``h`` rows per horizon are ``NaN`` (unresolved future).
+
+    Args:
+        df: Cleaned OHLCV frame.
+        prediction: Prediction/target configuration.
+
+    Returns:
+        DataFrame indexed like ``df`` with ``ret_*`` and ``target_*`` columns.
+    """
+    close = df["close"]
+    out = pd.DataFrame(index=df.index)
+    for h in prediction.horizons:
+        simple_ret = close.shift(-h) / close - 1.0
+        log_ret = np.log(close.shift(-h) / close)
+        out[f"ret_{h}"] = log_ret
+        if prediction.task == "regression":
+            out[f"target_{h}"] = log_ret
+        elif prediction.neutral_band > 0.0:
+            upper = prediction.threshold + prediction.neutral_band
+            lower = prediction.threshold - prediction.neutral_band
+            label = pd.Series(np.nan, index=df.index)
+            label[simple_ret > upper] = 1.0
+            label[simple_ret < lower] = 0.0
+            out[f"target_{h}"] = label
+        else:
+            label = (simple_ret > prediction.threshold).astype(float)
+            label[simple_ret.isna()] = np.nan
+            out[f"target_{h}"] = label
+    return out
+
+
+def build_target(df: pd.DataFrame, prediction: PredictionConfig) -> pd.Series:
+    """Build the primary supervised target (backward-compatible single Series).
+
+    Returns the ``target_{horizon}`` column from :func:`build_multi_horizon_targets`
+    for ``prediction.horizon``, named ``target`` for legacy consumers.
 
     Args:
         df: Cleaned OHLCV frame.
@@ -94,24 +134,8 @@ def build_target(df: pd.DataFrame, prediction: PredictionConfig) -> pd.Series:
     Returns:
         A Series named ``target`` aligned to ``df.index``.
     """
-    horizon = prediction.horizon
-    forward_return = df["close"].shift(-horizon) / df["close"] - 1.0
-
-    if prediction.task == "regression":
-        target = forward_return
-    elif prediction.neutral_band > 0.0:
-        # Dead-zone labelling: only decisive moves become training labels; bars inside
-        # the band (and the unresolved final ``horizon`` rows) stay NaN and are dropped
-        # downstream, so the model is not trained on near-zero directional noise.
-        upper = prediction.threshold + prediction.neutral_band
-        lower = prediction.threshold - prediction.neutral_band
-        target = pd.Series(np.nan, index=df.index, name="target")
-        target[forward_return > upper] = 1.0
-        target[forward_return < lower] = 0.0
-    else:
-        target = (forward_return > prediction.threshold).astype(float)
-        target[forward_return.isna()] = np.nan
-
+    targets = build_multi_horizon_targets(df, prediction)
+    target = targets[f"target_{prediction.horizon}"].copy()
     target.name = "target"
     return target
 

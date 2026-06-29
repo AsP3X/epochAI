@@ -183,7 +183,12 @@ class PredictionConfig(BaseModel):
     """Defines the supervised-learning target.
 
     Attributes:
-        horizon: Forward horizon, in candles, over which the outcome is measured.
+        horizon: Primary forward horizon (in candles) used for legacy single-head
+            paths, outcome logging, and backtest horizon-aware simulation.
+        horizons: Multi-horizon candle counts for simultaneous forecasting (e.g.
+            ``[1, 5, 10, 15, 30, 60]`` on a 1m base). When empty, resolves to
+            ``[horizon]`` (single-horizon mode).
+        quantiles: Quantile levels for return bands (must include ``0.5``).
         task: ``"classification"`` predicts P(up); ``"regression"`` predicts return.
         threshold: Forward return above which a candle is labelled "up"
             (classification) - a small positive value can encode a neutral band.
@@ -194,7 +199,15 @@ class PredictionConfig(BaseModel):
             moves rather than near-zero noise. ``0`` keeps every bar (legacy behaviour).
     """
 
-    horizon: int = 12
+    horizon: int = 60
+    horizons: list[int] = Field(
+        default_factory=lambda: [1, 5, 10, 15, 30, 60],
+        description="Multi-horizon candle counts; empty list => single-horizon [horizon].",
+    )
+    quantiles: list[float] = Field(
+        default_factory=lambda: [0.1, 0.5, 0.9],
+        description="Quantile levels for return bands; must include 0.5 (median).",
+    )
     task: Literal["classification", "regression"] = "classification"
     threshold: float = 0.0
     neutral_band: float = Field(
@@ -202,6 +215,39 @@ class PredictionConfig(BaseModel):
         ge=0.0,
         description="Dead-zone half-width around threshold; ambiguous bars are dropped.",
     )
+
+    @model_validator(mode="after")
+    def _normalize_horizons(self) -> PredictionConfig:
+        if not self.horizons:
+            self.horizons = [self.horizon]
+        else:
+            self.horizons = sorted(set(int(h) for h in self.horizons))
+            if any(h < 1 for h in self.horizons):
+                raise ValueError("prediction.horizons must contain positive integers.")
+        if self.horizon not in self.horizons:
+            raise ValueError("prediction.horizon must be one of prediction.horizons.")
+        qs = sorted(set(float(q) for q in self.quantiles))
+        if not qs or any(q <= 0.0 or q >= 1.0 for q in qs):
+            raise ValueError("prediction.quantiles must be strictly between 0 and 1.")
+        if 0.5 not in qs:
+            raise ValueError("prediction.quantiles must include 0.5 (median).")
+        self.quantiles = qs
+        return self
+
+    @property
+    def max_horizon(self) -> int:
+        """Longest configured horizon (purge/embargo and label tail)."""
+        return max(self.horizons)
+
+    def horizon_label(self, horizon: int) -> str:
+        """Human label for a horizon candle count (e.g. ``60`` -> ``1hr`` on 1m base)."""
+        labels = {1: "1m", 5: "5m", 10: "10m", 15: "15m", 30: "30m", 60: "1hr"}
+        return labels.get(horizon, f"{horizon}b")
+
+    @property
+    def n_outputs(self) -> int:
+        """Flat output width for multi-head models: horizons x (quantiles + direction)."""
+        return len(self.horizons) * (len(self.quantiles) + 1)
 
 
 class EvolutionConfig(BaseModel):
@@ -602,15 +648,16 @@ class AppConfig(BaseModel):
             raise ValueError("At least one symbol must be configured.")
         if self.prediction.horizon < 1:
             raise ValueError("prediction.horizon must be >= 1 candle.")
+        max_h = self.prediction.max_horizon
         if self.walk_forward.step_size < 1:
             raise ValueError("walk_forward.step_size must be >= 1 candle.")
-        if self.walk_forward.initial_train_period < self.prediction.horizon + 1:
+        if self.walk_forward.initial_train_period < max_h + 1:
             raise ValueError(
-                "walk_forward.initial_train_period must exceed prediction.horizon."
+                "walk_forward.initial_train_period must exceed prediction.max_horizon."
             )
-        # The purge gap (defaulting to the horizon) must leave training rows behind.
+        # The purge gap (defaulting to max horizon) must leave training rows behind.
         embargo = self.walk_forward.embargo
-        resolved_embargo = self.prediction.horizon if embargo is None else embargo
+        resolved_embargo = max_h if embargo is None else embargo
         if self.walk_forward.initial_train_period <= resolved_embargo:
             raise ValueError(
                 "walk_forward.initial_train_period must exceed the embargo gap "

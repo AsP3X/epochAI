@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
+from epoch_ai.features.pipeline import (
+    FeaturePipeline,
+    build_multi_horizon_targets,
+    build_target,
+    forward_return,
+)
 
 
 def test_pipeline_produces_features(market, small_config):
@@ -45,6 +50,29 @@ def test_target_is_binary_and_causal(market, small_config):
 def test_forward_return_alignment(market, small_config):
     fr = forward_return(market, small_config.prediction.horizon)
     assert fr.iloc[-small_config.prediction.horizon :].isna().all()
+
+
+def test_multi_horizon_targets_shape_and_causality(market, small_config):
+    """Each horizon has independent NaN tails; no future leak into features."""
+    small_config.prediction.horizons = [1, 5, 10]
+    small_config.prediction.horizon = 10
+    targets = build_multi_horizon_targets(market, small_config.prediction)
+    assert list(targets.columns) == ["ret_1", "target_1", "ret_5", "target_5", "ret_10", "target_10"]
+    for h in (1, 5, 10):
+        assert targets[f"ret_{h}"].iloc[-h:].isna().all()
+        assert targets[f"target_{h}"].iloc[-h:].isna().all()
+    primary = build_target(market, small_config.prediction)
+    assert primary.name == "target"
+    assert primary.equals(targets["target_10"])
+
+
+def test_multi_horizon_neutral_band(market, small_config):
+    small_config.prediction.horizons = [5]
+    small_config.prediction.horizon = 5
+    small_config.prediction.neutral_band = 0.01
+    targets = build_multi_horizon_targets(market, small_config.prediction)
+    labeled = targets["target_5"].dropna()
+    assert labeled.isin([0.0, 1.0]).all()
 
 
 def test_neutral_band_drops_ambiguous_samples(market, small_config):

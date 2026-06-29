@@ -43,6 +43,41 @@ def test_invalid_horizon_rejected():
 def test_initial_train_must_exceed_horizon():
     with pytest.raises(ValueError):
         AppConfig.model_validate(
+            {
+                "prediction": {"horizon": 60, "horizons": [60]},
+                "walk_forward": {"initial_train_period": 10},
+            }
+        )
+
+
+def test_horizon_must_be_in_horizons():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"prediction": {"horizon": 12, "horizons": [1, 5, 10]}})
+
+
+def test_quantiles_must_include_median():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"prediction": {"quantiles": [0.1, 0.9]}})
+
+
+def test_multi_horizon_defaults():
+    config = AppConfig()
+    assert config.prediction.horizons == [1, 5, 10, 15, 30, 60]
+    assert config.prediction.horizon == 60
+    assert config.prediction.quantiles == [0.1, 0.5, 0.9]
+    assert config.prediction.max_horizon == 60
+    assert config.prediction.n_outputs == 24  # 6 horizons x (3 quantiles + 1 direction)
+    assert config.prediction.horizon_label(60) == "1hr"
+
+
+def test_single_horizon_mode_from_empty_horizons():
+    config = AppConfig.model_validate({"prediction": {"horizon": 8, "horizons": []}})
+    assert config.prediction.horizons == [8]
+
+
+def test_initial_train_must_exceed_horizon_legacy():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate(
             {"prediction": {"horizon": 50}, "walk_forward": {"initial_train_period": 10}}
         )
 
@@ -162,9 +197,13 @@ def test_invalid_val_fraction_rejected():
 def test_shipped_config_yaml_loads():
     """The example config must resolve with the new keys."""
     config = load_config("config/config.yaml")
+    assert config.timeframe == "1m"
     assert config.model.calibration == "isotonic"
-    assert config.walk_forward.recency_half_life == 5000
-    assert config.prediction.neutral_band == 0.001
+    assert config.walk_forward.recency_half_life == 75000
+    assert config.prediction.horizon == 60
+    assert config.prediction.horizons == [1, 5, 10, 15, 30, 60]
+    assert config.prediction.quantiles == [0.1, 0.5, 0.9]
+    assert config.prediction.neutral_band == 0.0001
     assert "ETH/USDT" in config.data.context_symbols
     assert "SOL/USDT" in config.data.context_symbols
     assert "BNB/USDT" in config.data.context_symbols

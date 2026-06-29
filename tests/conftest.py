@@ -64,7 +64,7 @@ def small_config() -> AppConfig:
         {
             "symbols": ["BTC/USDT"],
             "timeframe": "15m",
-            "prediction": {"horizon": 8},
+            "prediction": {"horizon": 8, "horizons": [8]},
             "data": {"synthesize_market_extensions": False},
             "features": {
                 "higher_timeframe": False,

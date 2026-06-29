@@ -1,12 +1,12 @@
 # =============================================================================
 # epoch_ai - example configuration
 # =============================================================================
-# Focused on BTC/USDT perpetual futures, 15m candles, 4h (12-candle) horizon.
-# Adding more pairs is as simple as extending the `symbols` list.
+# BTC/USDT perpetual futures, 1-minute candles, multi-horizon prediction
+# (immediate/1m through 1hr). Adding more pairs extends the `symbols` list.
 
 symbols:
   - "BTC/USDT"
-timeframe: "15m"
+timeframe: "1m"
 
 # -----------------------------------------------------------------------------
 # Data: maximise historical depth. BTC/USDT perp on Binance USDT-M starts ~2019-11.
@@ -50,11 +50,11 @@ features:
   onchain: true                # on-chain + token-safety columns (proxies offline)
   patterns: true               # classic chart-pattern geometry (secondary)
   manipulation: true           # rug/manipulation proxies from OHLCV+derivatives
-  higher_timeframe: true       # 1h/4h trend context aligned to 15m grid
+  higher_timeframe: true       # 15m/1h/4h trend context aligned to 1m grid
   macro: true                  # dominance, stablecoin supply, DXY, VIX, etc.
   pattern_lookbacks: [24, 48, 96, 192, 384]
   pivot_confirm_bars: 3
-  htf_timeframes: ["1h", "4h"]
+  htf_timeframes: ["15m", "1h", "4h"]
   dropna: true
   return_lags: [1, 2, 3, 6, 12, 18, 24, 36, 48, 72, 96]
   ma_windows: [5, 10, 20, 50, 100, 200]
@@ -62,13 +62,16 @@ features:
   vol_windows: [6, 12, 24, 48, 96, 192]
 
 # -----------------------------------------------------------------------------
-# Prediction target: direction over a 12-candle (4h) horizon.
+# Multi-horizon prediction: direction + quantile return bands at 1m/5m/10m/15m/30m/1hr.
+# `horizon` is the primary head (1hr); purge/embargo defaults to max(horizons)=60.
 # -----------------------------------------------------------------------------
 prediction:
-  horizon: 12
+  horizon: 60                  # primary head = 1hr (60 x 1m candles)
+  horizons: [1, 5, 10, 15, 30, 60]
+  quantiles: [0.1, 0.5, 0.9]
   task: "classification"
   threshold: 0.0
-  neutral_band: 0.001        # drop near-flat 4h moves; sharper up/down labels
+  neutral_band: 0.0001         # drop near-flat moves at 1m scale
 
 # -----------------------------------------------------------------------------
 # Gradient-boosting model. Backend is pluggable:
@@ -129,12 +132,12 @@ model:
 # outcomes + context, retrain, and march forward through all of history.
 # -----------------------------------------------------------------------------
 walk_forward:
-  initial_train_period: 2000   # candles used for the first fit (oldest data)
-  step_size: 200               # candles predicted + ingested per iteration
+  initial_train_period: 43200  # ~30 days of 1m bars before first OOS prediction
+  step_size: 1440              # ~1 day per walk-forward step
   retrain_frequency: 5         # evolved_nn: 5 balances cost; use 1 to retrain every step
   expanding: true              # expanding window = full accumulated history
-  recency_half_life: 5000      # decay sample weights so recent regimes matter more
-  embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)
+  recency_half_life: 75000     # decay sample weights so recent regimes matter more
+  embargo: null                # purge gap (null = prediction.max_horizon=60; 0 = off)
   max_steps: null              # cap iterations for quick demos (null = full run)
   checkpoint_enabled: true     # save progress each step; `train --resume` continues
   checkpoint_path: null        # null = artifacts/checkpoints/walk_forward_<symbol>.json
@@ -145,7 +148,7 @@ walk_forward:
 # only repoint the live model when the challenger improves the metric.
 # -----------------------------------------------------------------------------
 promotion:
-  eval_bars: 2000              # most-recent resolved bars held out for the comparison
+  eval_bars: 30000             # ~21 days of 1m bars held out for challenger vs champion
   metric: oos_logloss          # oos_logloss|oos_brier|oos_rmse (lower better) | oos_accuracy|oos_auc|oos_directional_accuracy (higher)
   min_improvement: 0.0         # required sign-aware improvement over champion (must be strictly positive; a tie never promotes)
 
@@ -164,7 +167,7 @@ safety:
 risk:
   initial_capital: 10000.0
   risk_per_trade: 0.02
-  max_leverage: 3.0
+  max_leverage: 1.0             # 1x default (no borrowing); configurable upward
   long_threshold: 0.58        # P(up) long entry (wider band reduces churn vs 0.55)
   short_threshold: 0.42      # P(up) short entry (paired with long_threshold)
   fee_rate: 0.0004
@@ -193,7 +196,7 @@ execution:
   metrics_enabled: true
   calibration_min_accuracy: null  # e.g. 0.52 to block trades when OOS accuracy drops
   calibration_min_samples: 30
-  min_buffer_bars: 500
+  min_buffer_bars: 7500         # ~5 days of 1m warmup for live/replay
 
 api:
   host: "127.0.0.1"

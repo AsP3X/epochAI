@@ -120,8 +120,13 @@ def _min_train_batch(genome: NNGenome) -> int:
     return 2 if genome.use_batch_norm else 1
 
 
-def build_mlp(input_dim: int, genome: NNGenome, *, task: str):
-    """Construct a feed-forward network from ``genome``."""
+def build_mlp(input_dim: int, genome: NNGenome, *, task: str, n_outputs: int = 1):
+    """Construct a feed-forward network from ``genome``.
+
+    Args:
+        n_outputs: Output neuron count (1 for legacy single-head; multi-horizon uses
+            ``prediction.n_outputs``).
+    """
     _, nn = _import_torch()
     layers: list = []
     prev = input_dim
@@ -133,7 +138,7 @@ def build_mlp(input_dim: int, genome: NNGenome, *, task: str):
         if genome.dropout > 0.0:
             layers.append(nn.Dropout(genome.dropout))
         prev = hidden
-    layers.append(nn.Linear(prev, 1))
+    layers.append(nn.Linear(prev, n_outputs))
     return nn.Sequential(*layers)
 
 
