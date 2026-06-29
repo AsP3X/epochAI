@@ -55,17 +55,16 @@ def run_telegram_bot(config: AppConfig) -> None:
         if update.effective_chat is None or not _authorized(update.effective_chat.id):
             return
         from epoch_ai.data.downloader import HistoricalDownloader
+        from epoch_ai.interfaces.telegram import format_forecast_summary
+        from epoch_ai.services.forecast_api import build_live_payload
 
         market = HistoricalDownloader(config).load_or_download(config.primary_symbol, n_bars=1200)
         if runtime.status().models_available == 0:
             await update.message.reply_text("No trained models. Run train first.")
             return
         runtime.load_model()
-        pred = runtime.predict_market(market)
-        await update.message.reply_text(
-            f"pred={pred.raw_prediction:.4f} signal={pred.decision.signal} "
-            f"conf={pred.decision.confidence:.3f} model={pred.model_version}"
-        )
+        payload = build_live_payload(runtime.predict_multi_horizon(market))
+        await update.message.reply_text(format_forecast_summary(payload))
 
     async def cmd_halt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.effective_chat is None or not _authorized(update.effective_chat.id):

@@ -38,6 +38,11 @@ def test_runtime_service_predict_and_run(market, small_config, tmp_path):
     assert 0.0 <= pred.raw_prediction <= 1.0
     assert pred.model_version.startswith("v_")
 
+    multi = runtime.predict_multi_horizon(market)
+    assert multi.last_close > 0
+    assert len(multi.horizons) >= 1
+    assert multi.to_json()["model_version"].startswith("v_")
+
     result = runtime.run_session(n_bars=2000, live_bars=200, retrain_every=0)
     assert result.bars_processed > 0
 

@@ -19,6 +19,7 @@ improves as it walks through history*.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,7 +29,7 @@ import pandas as pd
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.execution.safety import SafetyScorer
-from epoch_ai.features.pipeline import build_target, forward_return
+from epoch_ai.features.pipeline import build_multi_horizon_targets, build_target, forward_return
 from epoch_ai.learning.checkpoint import (
     build_checkpoint,
     clear_checkpoint,
@@ -37,8 +38,13 @@ from epoch_ai.learning.checkpoint import (
     save_checkpoint,
     validate_checkpoint,
 )
-from epoch_ai.learning.step_metrics import classification_step_metrics, regression_step_metrics
+from epoch_ai.learning.step_metrics import (
+    classification_step_metrics,
+    multi_horizon_classification_step_metrics,
+    regression_step_metrics,
+)
 from epoch_ai.learning.weighting import recency_weights
+from epoch_ai.logging_system.multi_horizon_log import log_immediate_outcomes
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.base import BaseModel
@@ -46,7 +52,9 @@ from epoch_ai.models.evolved_nn_model import EvolvedNNModel
 from epoch_ai.models.factory import build_model
 from epoch_ai.models.nn_genome import NNGenome
 from epoch_ai.models.registry import ModelRegistry
+from epoch_ai.services.types import build_multi_horizon_from_structured
 from epoch_ai.utils.logging import get_logger
+from epoch_ai.utils.timeframe import timeframe_to_minutes
 
 logger = get_logger(__name__)
 
@@ -171,9 +179,13 @@ class ProgressiveLearningEngine:
         # Align features with targets/outcomes and keep only resolved rows.
         y = build_target(market, self.config.prediction)
         fwd = forward_return(market, horizon)
-        data = features.join(y).join(fwd)
+        multi = build_multi_horizon_targets(market, self.config.prediction)
+        data = features.join(y).join(fwd).join(multi)
         data = data.join(market["close"].rename("close"))
-        data = data.dropna(subset=["target", "forward_return"])
+        drop_cols = ["target", "forward_return"]
+        for h in self.config.prediction.horizons:
+            drop_cols.extend([f"ret_{h}", f"target_{h}"])
+        data = data.dropna(subset=drop_cols)
         feature_cols = list(features.columns)
 
         n = len(data)
@@ -281,6 +293,10 @@ class ProgressiveLearningEngine:
                 )
                 model = build_model(self.config.model, task=self.config.prediction.task)
                 if isinstance(model, EvolvedNNModel):
+                    multi_train = data.loc[
+                        x_train.index,
+                        [c for c in data.columns if c.startswith(("ret_", "target_"))],
+                    ]
                     model.fit(
                         x_train,
                         y_train,
@@ -288,6 +304,8 @@ class ProgressiveLearningEngine:
                         compute_importance=compute_importance,
                         seed_genome=seed_genome,
                         seed_state=seed_state,
+                        prediction=self.config.prediction,
+                        multi_targets=multi_train,
                     )
                 else:
                     model.fit(x_train, y_train, sample_weight=weights)
@@ -304,6 +322,9 @@ class ProgressiveLearningEngine:
                             "train_end": str(ts_all[train_end - 1]),
                             "train_rows": len(x_train),
                             "step": step_idx,
+                            "horizons": list(self.config.prediction.horizons),
+                            "quantiles": list(self.config.prediction.quantiles),
+                            "n_outputs": self.config.prediction.n_outputs,
                         },
                         retain_versions=self.config.model.retain_versions,
                         protect=protect_labels,
@@ -315,6 +336,15 @@ class ProgressiveLearningEngine:
             x_test = x_all.iloc[cutoff:test_end]
             preds = model.predict(x_test)
             is_classification = self.config.prediction.task == "classification"
+            multi_head = (
+                isinstance(model, EvolvedNNModel) and model.multi_head_spec_ is not None
+            )
+            structured_batch = (
+                model.predict_structured(x_test)
+                if store is not None and multi_head
+                else None
+            )
+            bar_minutes = timeframe_to_minutes(self.config.timeframe)
 
             # Collect per-bar arrays for honest out-of-sample step metrics.
             step_preds: list[float] = []
@@ -364,32 +394,83 @@ class ProgressiveLearningEngine:
                         if entry_market_pos is not None
                         else {}
                     )
-                    pred_id = store.log_prediction(
-                        PredictionLog(
-                            timestamp=str(ts),
-                            symbol=symbol,
+                    feature_dict = {
+                        k: float(v) for k, v in x_test.iloc[offset].to_dict().items()
+                    }
+                    if structured_batch is not None and isinstance(model, EvolvedNNModel):
+                        spec = model.multi_head_spec_
+                        assert spec is not None
+                        multi = build_multi_horizon_from_structured(
+                            structured_batch,
+                            offset,
+                            as_of=pd.Timestamp(ts),
+                            last_close=entry_price,
                             model_version=model_version,
-                            horizon=horizon,
-                            prediction=float(raw_pred),
-                            confidence=decision.confidence,
-                            signal=decision.signal,
-                            entry_price=entry_price,
-                            features={
-                                k: float(v) for k, v in x_test.iloc[offset].to_dict().items()
-                            },
+                            symbol=symbol,
+                            timeframe=self.config.timeframe,
+                            horizons=list(spec.horizons),
+                            horizon_label_fn=self.config.prediction.horizon_label,
+                            bar_minutes=bar_minutes,
                         )
-                    )
-                    resolve_ts = ts_all[min(pos + horizon, n - 1)]
-                    store.log_outcome(
-                        OutcomeLog(
-                            prediction_id=pred_id,
-                            resolve_timestamp=str(resolve_ts),
-                            forward_return=realized_ret,
-                            realized_label=realized_label,
-                            exit_price=entry_price * (1.0 + realized_ret),
-                            context=context,
+                        for forecast in multi.horizons:
+                            h = forecast.horizon
+                            ret_h = float(data[f"ret_{h}"].iloc[pos])
+                            label_h = int(data[f"target_{h}"].iloc[pos])
+                            resolve_idx = min(pos + h, n - 1)
+                            resolve_ts = ts_all[resolve_idx]
+                            band_features = {
+                                **feature_dict,
+                                "return_q10": float(math.log(forecast.price_p10 / entry_price)),
+                                "return_q50": forecast.exp_return,
+                                "return_q90": float(math.log(forecast.price_p90 / entry_price)),
+                                "price_p10": forecast.price_p10,
+                                "price_p50": forecast.price_p50,
+                                "price_p90": forecast.price_p90,
+                                "head_confidence": forecast.confidence,
+                                "reliable": forecast.reliable,
+                            }
+                            log_immediate_outcomes(
+                                store,
+                                timestamp=str(ts),
+                                symbol=symbol,
+                                model_version=model_version,
+                                horizon=h,
+                                p_up=forecast.p_up,
+                                confidence=forecast.confidence,
+                                signal=decision.signal,
+                                entry_price=entry_price,
+                                features=band_features,
+                                forward_return=math.exp(ret_h) - 1.0,
+                                realized_label=label_h,
+                                resolve_timestamp=str(resolve_ts),
+                                exit_price=entry_price * math.exp(ret_h),
+                                context=context,
+                            )
+                    else:
+                        pred_id = store.log_prediction(
+                            PredictionLog(
+                                timestamp=str(ts),
+                                symbol=symbol,
+                                model_version=model_version,
+                                horizon=horizon,
+                                prediction=float(raw_pred),
+                                confidence=decision.confidence,
+                                signal=decision.signal,
+                                entry_price=entry_price,
+                                features=feature_dict,
+                            )
                         )
-                    )
+                        resolve_ts = ts_all[min(pos + horizon, n - 1)]
+                        store.log_outcome(
+                            OutcomeLog(
+                                prediction_id=pred_id,
+                                resolve_timestamp=str(resolve_ts),
+                                forward_return=realized_ret,
+                                realized_label=realized_label,
+                                exit_price=entry_price * (1.0 + realized_ret),
+                                context=context,
+                            )
+                        )
 
             n_step = len(preds)
             if n_step > 0:
@@ -410,6 +491,30 @@ class ProgressiveLearningEngine:
                             short_threshold=self.config.risk.short_threshold,
                         )
                     )
+                    if (
+                        isinstance(model, EvolvedNNModel)
+                        and model.multi_head_spec_ is not None
+                    ):
+                        structured = model.predict_structured(x_test)
+                        horizons = model.multi_head_spec_.horizons
+                        labels_by_h = {
+                            h: data[f"target_{h}"].iloc[cutoff:test_end].to_numpy(dtype=float)
+                            for h in horizons
+                        }
+                        returns_by_h = {
+                            h: data[f"ret_{h}"].iloc[cutoff:test_end].to_numpy(dtype=float)
+                            for h in horizons
+                        }
+                        record.update(
+                            multi_horizon_classification_step_metrics(
+                                structured,
+                                labels_by_h,
+                                returns_by_h,
+                                long_threshold=self.config.risk.long_threshold,
+                                short_threshold=self.config.risk.short_threshold,
+                                primary_horizon=self.config.prediction.horizon,
+                            )
+                        )
                     # Human: Track label balance and mean P(up) per step to explain
                     #        first-vs-second-half OOS accuracy drift in backtest reports.
                     # Agent: WRITES test_label_rate, mean_prediction; CAUSAL step-local stats.

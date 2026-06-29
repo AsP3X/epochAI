@@ -21,6 +21,7 @@ def test_metric_direction():
     assert metric_higher_is_better("oos_auc") is True
     assert metric_higher_is_better("oos_logloss") is False
     assert metric_higher_is_better("oos_brier") is False
+    assert metric_higher_is_better("oos_brier_weighted") is False
     assert metric_higher_is_better("oos_rmse") is False
 
 

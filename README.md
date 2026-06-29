@@ -276,6 +276,20 @@ python -m epoch_ai train --bars 16000 --log-predictions
 
 ```bash
 python -m epoch_ai auto-retrain
+python -m epoch_ai auto-retrain --promote-policy   # also train/promote PPO when rl.enabled
+```
+
+**Coarse daily loop** (post-initial train; uses `adaptation.coarse_step_size`):
+
+```bash
+python -m epoch_ai schedule-retrain --promote --interval-hours 24 --max-cycles 1000
+python -m epoch_ai schedule-retrain --promote --promote-policy --max-cycles 1  # smoke
+```
+
+**Holdout acceptance check** (predictor + policy vs baseline/buy-and-hold):
+
+```bash
+python -m epoch_ai evaluate-holdout --bars 8000
 ```
 
 **Automate the repeat block** (retrain + promote on a timer):
@@ -537,10 +551,15 @@ Architecture decisions: `docs/adr/`.
 
 ## Tech stack
 
-Python 3.12+ · pandas/numpy · LightGBM · Pydantic + YAML · SQLite + Parquet ·
-scikit-learn. Optional: ccxt, vectorbt, mlflow, river, pandas_ta.
+Python 3.12+ · pandas/numpy · PyTorch (evolved_nn + PPO policy) · LightGBM · Pydantic + YAML · SQLite + Parquet ·
+scikit-learn. Optional: ccxt, vectorbt, mlflow, river, pandas_ta, python-telegram-bot.
 
 ## Disclaimer
 
-This is research/educational software. It is **not** financial advice and ships with
-no profitability guarantees. Backtested/synthetic results do not imply live returns.
+This is **research and educational software only**. It is **not** financial advice,
+investment advice, or a recommendation to trade. Paper trading is the default;
+real-money exchange order routing is **intentionally unimplemented** (`execution.mode`
+stays `paper` unless you explicitly enable live keys and `--confirm-live` — use at your
+own risk). Backtested, synthetic, and paper results do **not** imply live profitability.
+Multi-horizon forecasts and learned policies can fail on unseen regimes; hard caps and
+kill-switches are safety nets, not guarantees.

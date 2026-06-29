@@ -9,12 +9,22 @@ import pandas as pd
 
 from epoch_ai.calibration.tracker import CalibrationTracker
 from epoch_ai.config.settings import AppConfig
+from epoch_ai.execution.action_log import ActionLog
 from epoch_ai.execution.audit_log import AuditLog
 from epoch_ai.execution.executor import Fill, TradeExecutor, build_executor
 from epoch_ai.execution.kill_switch import KillSwitch
+from epoch_ai.execution.policy.executor import decide_trading_action, load_ppo_policy
+from epoch_ai.execution.policy.ppo_policy import PPOPolicy
 from epoch_ai.execution.portfolio_state import PortfolioState
+from epoch_ai.execution.safety import SafetyScorer
+from epoch_ai.execution.session_state import SessionState
 from epoch_ai.execution.treasury import Treasury, TreasurySnapshot
-from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
+from epoch_ai.interfaces.telegram import format_safety_alert, format_trade_alert
+from epoch_ai.logging_system.multi_horizon_log import (
+    PendingHorizonLog,
+    log_multi_horizon_bar,
+    resolve_pending_horizons,
+)
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.monitoring.metrics import MetricsRecorder
 from epoch_ai.services.types import PredictionResult
@@ -24,16 +34,6 @@ if TYPE_CHECKING:
     from epoch_ai.services.runtime import RuntimeService
 
 logger = get_logger(__name__)
-
-
-@dataclass(slots=True)
-class PendingPrediction:
-    """Prediction awaiting horizon resolution for outcome logging."""
-
-    prediction_id: int
-    entry_index: int
-    entry_price: float
-    raw_prediction: float
 
 
 @dataclass(slots=True)
@@ -86,12 +86,17 @@ class LiveTradingEngine:
         self.audit_log = audit_log
         self.calibration = calibration
         self.metrics = metrics
-        self._pending: list[PendingPrediction] = []
+        self._pending_horizons: list[PendingHorizonLog] = []
         self._portfolio: PortfolioState | None = None
         self._prev_close: float | None = None
         self._tick_count = 0
         self._fill_count = 0
         self._calibration_gate_passed = True
+        self._ppo: PPOPolicy | None = (
+            load_ppo_policy(config) if config.trading.policy_backend.startswith("learned") else None
+        )
+        self._action_log = ActionLog(config.trading.action_log_path)
+        self._safety = SafetyScorer(config.safety) if config.safety.enabled else None
 
     @classmethod
     def create(
@@ -153,11 +158,17 @@ class LiveTradingEngine:
             return None
 
         if self._portfolio is None:
-            self._portfolio = PortfolioState.initial(self.executor.equity)
+            saved = SessionState.load(self.config.trading.session_state_path)
+            self._portfolio = (
+                saved.to_portfolio()
+                if saved is not None
+                else PortfolioState.initial(self.executor.equity)
+            )
 
         self._resolve_outcomes(market)
         close = float(market["close"].iloc[-1])
         ts = market.index[-1]
+        entry_index = len(market) - 1
 
         if self._prev_close is not None and self._prev_close > 0:
             period_return = close / self._prev_close - 1.0
@@ -165,20 +176,28 @@ class LiveTradingEngine:
             self.executor.mark_to_market(period_return)
             if self._portfolio is not None:
                 lost = self.executor.equity < prev_eq
+                pos_weight = getattr(self.executor, "position_weight", None)
                 self._portfolio.after_bar(
                     self.executor.equity,
                     lost_trade=lost,
                     cooldown_bars=self.config.risk.cooldown_bars,
+                    position_weight=pos_weight,
                 )
 
         pred = self.runtime.predict_market(market)
+        multi = self.runtime.predict_multi_horizon(market)
+        safety = None
+        if self._safety is not None and pred.features:
+            safety = self._safety.assess(pd.Series(pred.features))
         if self._portfolio is not None:
-            pred.decision = self.runtime.risk.decide(
-                pred.raw_prediction,
-                self._portfolio,
+            pred.decision = decide_trading_action(
+                self.config,
+                raw_prediction=pred.raw_prediction,
+                multi=multi,
+                portfolio=self._portfolio,
+                ppo=self._ppo,
+                safety=safety,
             )
-
-        feature_row = pred.features or {}
 
         halted = self.kill_switch.is_halted()
         calibration_blocked = False
@@ -187,12 +206,19 @@ class LiveTradingEngine:
         if halted:
             logger.warning("Kill switch active — skipping rebalance.")
             if self.audit_log is not None:
+                safety_msg = format_safety_alert(
+                    event="kill_switch",
+                    symbol=symbol,
+                    timestamp=str(ts),
+                    detail=self.kill_switch.read().reason or "halted",
+                )
                 self.audit_log.append(
                     "halt_skip",
                     {
                         "symbol": symbol,
                         "timestamp": str(ts),
                         "reason": self.kill_switch.read().reason,
+                        "telegram_message": safety_msg,
                     },
                 )
         else:
@@ -219,6 +245,14 @@ class LiveTradingEngine:
                 fill = self.executor.rebalance(str(ts), close, pred.decision)
                 if fill is not None:
                     self._fill_count += 1
+                    trade_msg = format_trade_alert(
+                        symbol=symbol,
+                        timestamp=str(ts),
+                        signal=pred.decision.signal,
+                        price=close,
+                        equity=self.executor.equity,
+                        model_version=pred.model_version,
+                    )
                     if self.audit_log is not None:
                         self.audit_log.append(
                             "fill",
@@ -229,6 +263,7 @@ class LiveTradingEngine:
                                 "signal": pred.decision.signal,
                                 "target_weight": pred.decision.target_weight,
                                 "equity": self.executor.equity,
+                                "telegram_message": trade_msg,
                             },
                         )
 
@@ -245,26 +280,35 @@ class LiveTradingEngine:
                 },
             )
 
-        if self.store is not None:
-            pred_id = self.store.log_prediction(
-                PredictionLog(
-                    timestamp=str(ts),
-                    symbol=symbol,
-                    model_version=pred.model_version,
-                    horizon=self.config.prediction.horizon,
-                    prediction=pred.raw_prediction,
-                    confidence=pred.decision.confidence,
-                    signal=pred.decision.signal,
-                    entry_price=close,
-                    features=feature_row,
-                )
+        if self._portfolio is not None:
+            pos_weight = getattr(
+                self.executor, "position_weight", self._portfolio.position_weight
             )
-            self._pending.append(
-                PendingPrediction(
-                    prediction_id=pred_id,
-                    entry_index=len(market) - 1,
+            self._action_log.log_step(
+                timestamp=str(ts),
+                symbol=symbol,
+                model_version=pred.model_version,
+                policy_backend=self.config.trading.policy_backend,
+                raw_prediction=pred.raw_prediction,
+                decision=pred.decision,
+                equity=self.executor.equity,
+                position_weight=pos_weight,
+                multi=multi,
+                fill_fee=fill.fee if fill is not None else None,
+            )
+            SessionState.from_portfolio(self._portfolio).save(
+                self.config.trading.session_state_path
+            )
+
+        if self.store is not None:
+            self._pending_horizons.extend(
+                log_multi_horizon_bar(
+                    self.store,
+                    multi,
+                    signal=pred.decision.signal,
+                    base_features=pred.features or {},
                     entry_price=close,
-                    raw_prediction=pred.raw_prediction,
+                    entry_index=entry_index,
                 )
             )
 
@@ -295,40 +339,20 @@ class LiveTradingEngine:
         )
 
     def _resolve_outcomes(self, market: pd.DataFrame) -> None:
-        """Log realised outcomes once the prediction horizon has elapsed."""
-        if not self._pending:
+        """Log realised outcomes once each prediction horizon has elapsed."""
+        if self.store is None or not self._pending_horizons:
             return
-        horizon = self.config.prediction.horizon
-        threshold = self.config.prediction.threshold
-        current_idx = len(market) - 1
-        still_pending: list[PendingPrediction] = []
 
-        for pending in self._pending:
-            if current_idx - pending.entry_index < horizon:
-                still_pending.append(pending)
-                continue
-            resolve_idx = min(pending.entry_index + horizon, current_idx)
-            exit_price = float(market["close"].iloc[resolve_idx])
-            forward_return = exit_price / pending.entry_price - 1.0
-            realized_label = int(forward_return > threshold)
-            resolve_ts = market.index[resolve_idx]
-
-            if self.calibration is not None:
-                self.calibration.record(pending.raw_prediction, realized_label)
-
-            if self.store is not None:
-                self.store.log_outcome(
-                    OutcomeLog(
-                        prediction_id=pending.prediction_id,
-                        resolve_timestamp=str(resolve_ts),
-                        forward_return=forward_return,
-                        realized_label=realized_label,
-                        exit_price=exit_price,
-                        context={"live": True},
-                    )
-                )
-
-        self._pending = still_pending
+        self._pending_horizons = resolve_pending_horizons(
+            self._pending_horizons,
+            current_index=len(market) - 1,
+            close=market["close"],
+            index=market.index,
+            threshold=self.config.prediction.threshold,
+            store=self.store,
+            calibration=self.calibration,
+            context={"live": True},
+        )
 
     def finish(self) -> LiveSessionResult:
         """Settle treasury and close resources."""

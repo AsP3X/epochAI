@@ -20,6 +20,9 @@ Sub-commands:
 * ``checkpoint``     - seed or inspect walk-forward resume state.
 * ``progress``       - show walk-forward position and steps remaining.
 * ``info``         - print the resolved configuration.
+* ``predict``      - multi-horizon forecast table or JSON for the latest bar.
+* ``train-policy`` - train PPO trading policy on out-of-sample bar replay.
+* ``evaluate-holdout`` - score predictor + policy on the untouched final holdout.
 
 Run ``python -m epoch_ai <command> --help`` for details.
 """
@@ -257,6 +260,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         config.risk.long_threshold = args.long_threshold
     if args.short_threshold is not None:
         config.risk.short_threshold = args.short_threshold
+    if args.policy is not None:
+        config.trading.policy_backend = args.policy
     if args.reserve_fraction is not None:
         config.execution.reserve_fraction = args.reserve_fraction
     if args.confirm_live:
@@ -328,6 +333,71 @@ def cmd_run(args: argparse.Namespace) -> int:
     stats_after = _load_retrain_log_stats(config)
     if args.log_predictions or stats_after.joined_samples > 0:
         _print_retrain_log_summary(config, stats_after, before=stats_before)
+    return 0
+
+
+def cmd_train_policy(args: argparse.Namespace) -> int:
+    """Train the PPO trading policy on out-of-sample historical replay."""
+    config = _load(args)
+    if args.updates is not None:
+        config.rl.total_updates = args.updates
+    if args.rollout_steps is not None:
+        config.rl.rollout_steps = args.rollout_steps
+    config.rl.enabled = True
+
+    from epoch_ai.data.downloader import HistoricalDownloader
+    from epoch_ai.execution.policy.env import TradingReplayEnv
+    from epoch_ai.execution.policy.observation import observation_dim
+    from epoch_ai.execution.policy.ppo_policy import PPOPolicy
+
+    market = HistoricalDownloader(config).load_or_download(
+        config.primary_symbol,
+        n_bars=args.bars,
+    )
+    start = config.walk_forward.initial_train_period
+    if len(market) <= start + 10:
+        logger.error(
+            "Need more than %d bars for OOS policy training; got %d.",
+            start + 10,
+            len(market),
+        )
+        return 1
+
+    oos = market.iloc[start:]
+    env = TradingReplayEnv.from_market(config, oos)
+    policy = PPOPolicy(observation_dim(config), config.rl)
+    stats = policy.train(env)
+    policy.save(config.rl.policy_path)
+
+    print("\n=== Policy training complete ===")
+    print(f"OOS bars replayed : {len(oos):,}")
+    print(f"PPO updates         : {stats.updates}")
+    print(f"Mean rollout reward : {stats.mean_reward:.6f}")
+    print(f"Final replay equity : {stats.final_equity:,.2f}")
+    print(f"Saved policy        : {config.rl.policy_path}")
+    return 0
+
+
+def cmd_evaluate_holdout(args: argparse.Namespace) -> int:
+    """Evaluate predictor and policy benchmarks on the final holdout slice."""
+    from epoch_ai.learning.acceptance import evaluate_holdout
+
+    config = _load(args)
+    report = evaluate_holdout(config, n_bars=args.bars)
+    if report.skipped:
+        print(f"Holdout evaluation skipped: {report.reason}")
+        return 1
+    print("\n=== Holdout acceptance report ===")
+    print(f"Holdout bars     : {report.holdout_bars:,}")
+    if report.predictor_metrics:
+        print("Predictor metrics:")
+        for key, value in sorted(report.predictor_metrics.items()):
+            if isinstance(value, float):
+                print(f"  {key:<28}{value:.6f}")
+    print("Policy baseline  :", report.policy_baseline)
+    print("Policy buy&hold  :", report.policy_buy_hold)
+    if report.policy_champion:
+        print("Policy champion  :", report.policy_champion)
     return 0
 
 
@@ -543,6 +613,14 @@ def cmd_auto_retrain(args: argparse.Namespace) -> int:
             print(f"Auto-retrain skipped: {result.reason}")
             return 1
         _print_auto_retrain(result)
+        if args.promote_policy and config.rl.enabled:
+            from epoch_ai.learning.policy_promotion import auto_train_and_promote_policy
+
+            policy_result = auto_train_and_promote_policy(config, n_bars=args.bars)
+            print(
+                f"Policy: {'PROMOTED' if policy_result.promoted else 'kept champion'} "
+                f"({policy_result.reason})"
+            )
         return 0
 
     import time
@@ -623,6 +701,39 @@ def cmd_info(args: argparse.Namespace) -> int:
     """Print the resolved configuration as JSON."""
     config = _load(args)
     print(config.model_dump_json(indent=2))
+    return 0
+
+
+def cmd_predict(args: argparse.Namespace) -> int:
+    """Emit a multi-horizon forecast for the latest bar."""
+    from epoch_ai.services.forecast_api import build_live_payload
+    from epoch_ai.services.runtime import RuntimeService
+
+    config = _load(args)
+    market = HistoricalDownloader(config).load_or_download(
+        config.primary_symbol,
+        n_bars=args.bars,
+    )
+    runtime = RuntimeService(config)
+    runtime.load_model(args.model_version)
+    result = runtime.predict_multi_horizon(market)
+    payload = build_live_payload(result)
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"as_of={result.as_of} close={result.last_close:.2f} model={result.model_version}")
+        for h in result.horizons:
+            flag = "ok" if h.reliable else "low"
+            print(
+                f"  {h.label:>4}  p_up={h.p_up:.3f}  q50_ret={h.exp_return:+.5f}  "
+                f"p50={h.price_p50:.2f}  conf={h.confidence:.2f}  [{flag}]"
+            )
+        baseline = payload["baseline"]
+        print(
+            f"baseline signal={baseline['signal']:+d}  "
+            f"weighted_p_up={baseline['weighted_p_up']:.3f}  "
+            f"heads={baseline['n_heads_used']}"
+        )
     return 0
 
 
@@ -716,15 +827,21 @@ def cmd_schedule_retrain(args: argparse.Namespace) -> int:
         min_new_samples=args.min_new_samples,
         max_cycles=args.max_cycles,
         promote=args.promote,
+        promote_policy=args.promote_policy,
     )
     print(f"Completed {len(results)} retrain cycle(s).")
     for idx, result in enumerate(results, start=1):
-        if hasattr(result, "promoted"):  # AutoPromoteResult
+        if hasattr(result, "challenger_label"):
             print(
                 f"  cycle {idx}: challenger={result.challenger_label} "
                 f"promoted={result.promoted} skipped={result.skipped} ({result.reason})"
             )
-        else:  # RetrainResult
+        elif hasattr(result, "champion_path"):
+            print(
+                f"  cycle {idx}: policy promoted={result.promoted} "
+                f"metric={result.metric}={result.challenger_value:.6f} ({result.reason})"
+            )
+        else:
             print(
                 f"  cycle {idx}: version={result.model_version} rows={result.train_rows} "
                 f"skipped={result.skipped}"
@@ -939,8 +1056,57 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--long-threshold", type=float, default=None)
     p_run.add_argument("--short-threshold", type=float, default=None)
+    p_run.add_argument(
+        "--policy",
+        choices=["threshold", "baseline", "learned", "learned_with_baseline_fallback"],
+        default=None,
+        help="Trading policy backend (default: config trading.policy_backend).",
+    )
     p_run.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
     p_run.set_defaults(func=cmd_run)
+
+    p_train_policy = sub.add_parser(
+        "train-policy",
+        help="Train PPO trading policy on out-of-sample bar replay.",
+        parents=[parent],
+    )
+    p_train_policy.add_argument(
+        "--bars",
+        type=int,
+        default=None,
+        help="Historical depth (OOS tail starts after initial_train_period).",
+    )
+    p_train_policy.add_argument(
+        "--updates",
+        type=int,
+        default=None,
+        help="Override rl.total_updates for a fast smoke run.",
+    )
+    p_train_policy.add_argument(
+        "--rollout-steps",
+        type=int,
+        default=None,
+        help="Override rl.rollout_steps.",
+    )
+    p_train_policy.set_defaults(func=cmd_train_policy)
+
+    p_eval_holdout = sub.add_parser(
+        "evaluate-holdout",
+        help="Score predictor and policy on the untouched final holdout.",
+        parents=[parent],
+    )
+    p_eval_holdout.add_argument("--bars", type=int, default=None, help="History depth cap.")
+    p_eval_holdout.set_defaults(func=cmd_evaluate_holdout)
+
+    p_predict = sub.add_parser(
+        "predict",
+        help="Multi-horizon forecast for the latest bar.",
+        parents=[parent],
+    )
+    p_predict.add_argument("--bars", type=int, default=None, help="Warmup/history depth.")
+    p_predict.add_argument("--model-version", default=None, help="Registry label (default: latest).")
+    p_predict.add_argument("--json", action="store_true", help="Emit JSON payload.")
+    p_predict.set_defaults(func=cmd_predict)
 
     p_dl = sub.add_parser("download", help="Download/synthesize and cache history.", parents=[parent])
     p_dl.add_argument("--bars", type=int, default=None, help="Approx number of bars.")
@@ -1024,6 +1190,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Sleep between cycles when looping (default 0 = back-to-back).",
     )
+    p_auto.add_argument(
+        "--promote-policy",
+        action="store_true",
+        help="After predictor promotion cycle, train/promote the PPO policy.",
+    )
     p_auto.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
     p_auto.set_defaults(func=cmd_auto_retrain)
 
@@ -1079,7 +1250,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Periodic retrain scheduler loop.",
         parents=[parent],
     )
-    p_sched.add_argument("--interval-hours", type=float, default=24.0, help="Hours between retrains.")
+    p_sched.add_argument(
+        "--interval-hours",
+        type=float,
+        default=None,
+        help="Hours between retrains (default: adaptation.schedule_interval_hours).",
+    )
     p_sched.add_argument(
         "--min-new-samples",
         type=int,
@@ -1096,6 +1272,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--promote",
         action="store_true",
         help="Use the challenger/champion gate each cycle (promote only if better).",
+    )
+    p_sched.add_argument(
+        "--promote-policy",
+        action="store_true",
+        help="With --promote, also train/promote the PPO policy when rl.enabled.",
     )
     p_sched.set_defaults(func=cmd_schedule_retrain)
 

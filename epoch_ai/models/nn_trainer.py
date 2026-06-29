@@ -19,6 +19,7 @@ from sklearn.metrics import log_loss, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 
 from epoch_ai.config.settings import ModelConfig
+from epoch_ai.models.multi_head import MultiHeadSpec, multi_head_train_loss, multi_head_val_loss
 from epoch_ai.models.nn_genome import NNGenome
 from epoch_ai.utils.logging import get_logger
 
@@ -201,6 +202,7 @@ def build_training_cache(
     sample_weight: np.ndarray | None,
     val_fraction: float,
     split: int | None = None,
+    multi_head: MultiHeadSpec | None = None,
 ) -> TrainingDataCache:
     """Fit the scaler once and upload train/val tensors for reuse across genomes."""
     torch, _ = _import_torch()
@@ -213,6 +215,8 @@ def build_training_cache(
     scaler = StandardScaler()
     x_train = scaler.fit_transform(x[:split])
     y_train = y[:split].astype(np.float32)
+    if y_train.ndim == 1:
+        y_train = y_train.reshape(-1, 1)
     w_train = None if sample_weight is None else sample_weight[:split].astype(np.float32)
 
     has_val = split < len(x)
@@ -220,21 +224,32 @@ def build_training_cache(
     if has_val:
         x_val = scaler.transform(x[split:])
         y_val_np = y[split:].astype(np.float32)
+        if y_val_np.ndim == 1:
+            y_val_np = y_val_np.reshape(-1, 1)
     else:
         x_val = None
 
     is_classification = task == "classification"
     pos_weight = None
     if is_classification and config.class_weight == "balanced":
-        pos_weight = torch.tensor([_scale_pos_weight(y_train)], device=device)
+        if multi_head is not None:
+            pos_weight = [
+                torch.tensor(
+                    [_scale_pos_weight(y_train[:, multi_head.direction_index(h)])],
+                    device=device,
+                )
+                for h in multi_head.horizons
+            ]
+        else:
+            pos_weight = torch.tensor([_scale_pos_weight(y_train)], device=device)
 
     x_train_t = torch.from_numpy(x_train).float().to(device)
-    y_train_t = torch.from_numpy(y_train).float().to(device).view(-1, 1)
+    y_train_t = torch.from_numpy(y_train).float().to(device)
     w_train_t = None if w_train is None else torch.from_numpy(w_train).float().to(device)
 
     if has_val and x_val is not None and y_val_np is not None:
         x_val_t = torch.from_numpy(x_val).float().to(device)
-        y_val_t = torch.from_numpy(y_val_np).float().to(device).view(-1, 1)
+        y_val_t = torch.from_numpy(y_val_np).float().to(device)
     else:
         x_val_t = None
         y_val_t = None
@@ -268,6 +283,8 @@ def train_genome(
     refit_full: bool = False,
     cache: TrainingDataCache | None = None,
     initial_state: dict[str, object] | None = None,
+    multi_head: MultiHeadSpec | None = None,
+    primary_horizon: int | None = None,
 ) -> TrainResult:
     """Fit weights for ``genome`` with Adam and time-ordered early stopping.
 
@@ -296,12 +313,16 @@ def train_genome(
             sample_weight=sample_weight,
             val_fraction=val_fraction,
             split=split,
+            multi_head=multi_head,
         )
 
     device = cache.device
     split = cache.split
     scaler = cache.scaler
     y_val = cache.y_val_np
+    n_outputs = multi_head.n_outputs if multi_head is not None else 1
+    if primary_horizon is None and multi_head is not None:
+        primary_horizon = multi_head.horizons[-1]
 
     x_train_t = cache.x_train_t
     y_train_t = cache.y_train_t
@@ -313,7 +334,10 @@ def train_genome(
     pos_weight = cache.pos_weight
 
     if is_classification:
-        criterion: nn.Module = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
+        criterion: nn.Module | None = None if multi_head is not None else nn.BCEWithLogitsLoss(
+            pos_weight=pos_weight if not isinstance(pos_weight, list) else None,
+            reduction="none",
+        )
     else:
         criterion = nn.MSELoss(reduction="none")
 
@@ -323,7 +347,9 @@ def train_genome(
         # Human: keep the uncompiled module for state I/O; torch.compile wraps it in
         #        _orig_mod and would otherwise prefix every state_dict key.
         # Agent: base_model owns params; compiled `model` shares them for forward/backward.
-        base_model = build_mlp(int(x_train_t.shape[1]), genome, task=task).to(device)
+        base_model = build_mlp(
+            int(x_train_t.shape[1]), genome, task=task, n_outputs=n_outputs
+        ).to(device)
         if initial_state is not None:
             try:
                 base_model.load_state_dict(initial_state)  # type: ignore[arg-type]
@@ -360,12 +386,21 @@ def train_genome(
                     enabled=use_amp,
                 ):
                     logits = model(batch_x)
-                    loss_vec = criterion(logits, batch_y)
-                if w_train_t is not None:
-                    batch_w = w_train_t[idx]
-                    loss = (loss_vec.view(-1) * batch_w).mean()
-                else:
-                    loss = loss_vec.mean()
+                    if multi_head is not None:
+                        loss = multi_head_train_loss(
+                            logits,
+                            batch_y,
+                            multi_head,
+                            pos_weights=pos_weight if isinstance(pos_weight, list) else None,
+                        )
+                    else:
+                        loss_vec = criterion(logits, batch_y)  # type: ignore[misc]
+                        if w_train_t is not None:
+                            loss = (loss_vec.view(-1) * w_train_t[idx]).mean()
+                        else:
+                            loss = loss_vec.mean()
+                if multi_head is not None and w_train_t is not None:
+                    loss = loss * w_train_t[idx].mean()
                 loss.backward()
                 optimizer.step()
 
@@ -383,11 +418,19 @@ def train_genome(
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", enabled=use_amp):
                     val_logits = model(x_val_t)
-                if is_classification:
+                val_logits_np = val_logits.cpu().numpy()
+                if multi_head is not None and primary_horizon is not None:
+                    val_loss = multi_head_val_loss(
+                        val_logits_np,
+                        y_val,
+                        multi_head,
+                        primary_horizon=primary_horizon,
+                    )
+                elif is_classification:
                     val_probs = torch.sigmoid(val_logits).cpu().numpy().ravel()
                     val_loss = log_loss(y_val, val_probs, labels=[0, 1])
                 else:
-                    val_preds = val_logits.cpu().numpy().ravel()
+                    val_preds = val_logits_np.ravel()
                     val_loss = mean_squared_error(y_val, val_preds)
 
             if val_loss + 1e-6 < best_val:
@@ -410,8 +453,10 @@ def train_genome(
             full_scaler = StandardScaler()
             x_full = full_scaler.fit_transform(x)
             y_full = y.astype(np.float32)
+            if y_full.ndim == 1:
+                y_full = y_full.reshape(-1, 1)
             w_full = None if sample_weight is None else sample_weight.astype(np.float32)
-            base_model = build_mlp(x_full.shape[1], genome, task=task).to(device)
+            base_model = build_mlp(x_full.shape[1], genome, task=task, n_outputs=n_outputs).to(device)
             # Human: warm-start the full-window refit from the early-stopped best weights
             #        so Adam resumes near the optimum instead of from random init.
             # Agent: input_dim matches (same feature set); CAUSAL no leakage (weights only).
@@ -427,7 +472,7 @@ def train_genome(
                 weight_decay=genome.weight_decay,
             )
             x_full_t = torch.from_numpy(x_full).float().to(device)
-            y_full_t = torch.from_numpy(y_full).float().to(device).view(-1, 1)
+            y_full_t = torch.from_numpy(y_full).float().to(device)
             w_full_t = None if w_full is None else torch.from_numpy(w_full).float().to(device)
             for _ in range(best_epoch):
                 model.train()
@@ -440,11 +485,19 @@ def train_genome(
                     optimizer.zero_grad(set_to_none=True)
                     with torch.autocast(device_type="cuda", enabled=use_amp):
                         logits = model(x_full_t[idx])
-                        loss_vec = criterion(logits, y_full_t[idx])
-                    if w_full_t is not None:
-                        loss = (loss_vec.view(-1) * w_full_t[idx]).mean()
-                    else:
-                        loss = loss_vec.mean()
+                        if multi_head is not None:
+                            loss = multi_head_train_loss(
+                                logits,
+                                y_full_t[idx],
+                                multi_head,
+                                pos_weights=pos_weight if isinstance(pos_weight, list) else None,
+                            )
+                        else:
+                            loss_vec = criterion(logits, y_full_t[idx])  # type: ignore[misc]
+                            if w_full_t is not None:
+                                loss = (loss_vec.view(-1) * w_full_t[idx]).mean()
+                            else:
+                                loss = loss_vec.mean()
                     loss.backward()
                     optimizer.step()
             scaler = full_scaler
@@ -456,11 +509,19 @@ def train_genome(
             with torch.no_grad():
                 with torch.autocast(device_type="cuda", enabled=use_amp):
                     val_logits = model(x_val_t)
-                if is_classification:
+                val_logits_np = val_logits.cpu().numpy()
+                if multi_head is not None and primary_horizon is not None:
+                    best_val = multi_head_val_loss(
+                        val_logits_np,
+                        y_val,
+                        multi_head,
+                        primary_horizon=primary_horizon,
+                    )
+                elif is_classification:
                     val_probs = torch.sigmoid(val_logits).cpu().numpy().ravel()
                     best_val = float(log_loss(y_val, val_probs, labels=[0, 1]))
                 else:
-                    val_preds = val_logits.cpu().numpy().ravel()
+                    val_preds = val_logits_np.ravel()
                     best_val = float(mean_squared_error(y_val, val_preds))
         elif best_val == float("inf"):
             best_val = 0.0
@@ -484,27 +545,41 @@ def build_inference_model(
     *,
     task: str,
     device=None,
+    n_outputs: int = 1,
 ):
     """Build a ready-to-eval MLP from saved weights (reuse across predict calls)."""
     torch, _ = _import_torch()
     if device is None:
         device = resolve_device(config)
-    model = build_mlp(input_dim, genome, task=task).to(device)
+    model = build_mlp(input_dim, genome, task=task, n_outputs=n_outputs).to(device)
     model.load_state_dict(state_dict)  # type: ignore[arg-type]
     model.eval()
     return model
 
 
-def _forward_scaled(model, x_scaled: np.ndarray, config: ModelConfig, device, *, task: str):
+def _forward_scaled(
+    model,
+    x_scaled: np.ndarray,
+    config: ModelConfig,
+    device,
+    *,
+    task: str,
+    multi_head: MultiHeadSpec | None = None,
+    primary_horizon: int | None = None,
+):
     """Forward an already-scaled matrix through a prebuilt eval model."""
     torch, _ = _import_torch()
     use_amp = bool(config.nn.mixed_precision and getattr(device, "type", "") == "cuda")
     with torch.inference_mode():
         with torch.autocast(device_type="cuda", enabled=use_amp):
             logits = model(torch.from_numpy(x_scaled).float().to(device))
+        logits_np = logits.cpu().numpy()
+        if multi_head is not None and primary_horizon is not None:
+            idx = multi_head.direction_index(primary_horizon)
+            return 1.0 / (1.0 + np.exp(-logits_np[:, idx]))
         if task == "classification":
             return torch.sigmoid(logits).cpu().numpy().ravel()
-        return logits.cpu().numpy().ravel()
+        return logits_np.ravel()
 
 
 def predict_genome(
@@ -516,19 +591,44 @@ def predict_genome(
     *,
     task: str,
     model=None,
+    multi_head: MultiHeadSpec | None = None,
+    primary_horizon: int | None = None,
+    return_logits: bool = False,
 ) -> np.ndarray:
     """Run a trained genome forward and return probabilities or regression outputs.
 
     Pass a prebuilt ``model`` (from :func:`build_inference_model`) to skip rebuilding the
     network and reloading weights on every call (live/run loop, permutation importance).
     """
+    torch, _ = _import_torch()
     device = resolve_device(config)
     x_scaled = scaler.transform(x)
+    n_outputs = multi_head.n_outputs if multi_head is not None else 1
     if model is None:
         model = build_inference_model(
-            x_scaled.shape[1], genome, state_dict, config, task=task, device=device
+            x_scaled.shape[1],
+            genome,
+            state_dict,
+            config,
+            task=task,
+            device=device,
+            n_outputs=n_outputs,
         )
-    return _forward_scaled(model, x_scaled, config, device, task=task)
+    if return_logits and multi_head is not None:
+        use_amp = bool(config.nn.mixed_precision and getattr(device, "type", "") == "cuda")
+        with torch.inference_mode():
+            with torch.autocast(device_type="cuda", enabled=use_amp):
+                logits = model(torch.from_numpy(x_scaled).float().to(device))
+            return logits.cpu().numpy()
+    return _forward_scaled(
+        model,
+        x_scaled,
+        config,
+        device,
+        task=task,
+        multi_head=multi_head,
+        primary_horizon=primary_horizon,
+    )
 
 
 def permutation_importance(
@@ -544,6 +644,8 @@ def permutation_importance(
     max_features: int = 40,
     rng: np.random.Generator | None = None,
     model=None,
+    multi_head: MultiHeadSpec | None = None,
+    primary_horizon: int | None = None,
 ) -> dict[str, float]:
     """Estimate feature importance by shuffling each column on a validation slice."""
     if task != "classification":
@@ -560,7 +662,15 @@ def permutation_importance(
             x.shape[1], genome, state_dict, config, task=task, device=device
         )
     x_scaled = scaler.transform(x)
-    baseline_probs = _forward_scaled(model, x_scaled, config, device, task=task)
+    baseline_probs = _forward_scaled(
+        model,
+        x_scaled,
+        config,
+        device,
+        task=task,
+        multi_head=multi_head,
+        primary_horizon=primary_horizon,
+    )
     baseline = float(log_loss(y, baseline_probs, labels=[0, 1]))
 
     names = feature_names
@@ -573,7 +683,15 @@ def permutation_importance(
         col_idx = feature_names.index(name)
         x_perm = x_scaled.copy()
         rng.shuffle(x_perm[:, col_idx])
-        perm_probs = _forward_scaled(model, x_perm, config, device, task=task)
+        perm_probs = _forward_scaled(
+            model,
+            x_perm,
+            config,
+            device,
+            task=task,
+            multi_head=multi_head,
+            primary_horizon=primary_horizon,
+        )
         perm_loss = float(log_loss(y, perm_probs, labels=[0, 1]))
         importances[name] = max(0.0, perm_loss - baseline)
 

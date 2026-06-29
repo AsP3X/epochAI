@@ -73,7 +73,7 @@ def create_app(config: AppConfig):
     def models() -> list[dict[str, Any]]:
         return ModelRegistry(config.model.model_dir).list_versions()
 
-    @app.post("/predict/latest")
+    @app.get("/predict/latest")
     def predict_latest(bars: int = 1200) -> dict[str, Any]:
         from epoch_ai.data.downloader import HistoricalDownloader
 
@@ -92,6 +92,46 @@ def create_app(config: AppConfig):
             "confidence": result.decision.confidence,
             "model_version": result.model_version,
         }
+
+    @app.get("/forecast/live")
+    def forecast_live(bars: int = 1200) -> dict[str, Any]:
+        from epoch_ai.data.downloader import HistoricalDownloader
+        from epoch_ai.services.forecast_api import build_live_payload
+
+        if runtime.status().models_available == 0:
+            raise HTTPException(status_code=400, detail="No trained models available.")
+        market = HistoricalDownloader(config).load_or_download(
+            config.primary_symbol,
+            n_bars=bars,
+        )
+        runtime.load_model()
+        return build_live_payload(runtime.predict_multi_horizon(market))
+
+    @app.get("/forecast/historical")
+    def forecast_historical(limit: int = 500) -> dict[str, Any]:
+        from epoch_ai.logging_system.store import PredictionStore
+        from epoch_ai.services.forecast_api import build_historical_payload
+
+        with PredictionStore(config.logging.db_path) as store:
+            return build_historical_payload(
+                store,
+                symbol=config.primary_symbol,
+                limit=limit,
+            )
+
+    @app.get("/dashboard")
+    def dashboard(bars: int = 1200, limit: int = 500) -> dict[str, Any]:
+        from epoch_ai.interfaces.web import build_dashboard_payload
+        from epoch_ai.logging_system.store import PredictionStore
+
+        with PredictionStore(config.logging.db_path) as store:
+            return build_dashboard_payload(
+                config,
+                runtime,
+                store=store,
+                n_bars=bars,
+                historical_limit=limit,
+            )
 
     @app.post("/train")
     def train(body: TrainRequest) -> dict[str, Any]:

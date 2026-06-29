@@ -14,9 +14,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from epoch_ai.config.settings import ModelConfig
+from epoch_ai.config.settings import ModelConfig, PredictionConfig
 from epoch_ai.models.base import BaseModel
-from epoch_ai.models.calibration import ProbabilityCalibrator
+from epoch_ai.models.calibration import (
+    MultiHeadCalibrator,
+    ProbabilityCalibrator,
+    load_calibrator_sidecar,
+)
+from epoch_ai.models.multi_head import (
+    MultiHeadSpec,
+    parse_structured_predictions,
+    targets_to_matrix,
+)
 from epoch_ai.models.nn_genome import (
     NNGenome,
     default_genome,
@@ -57,6 +66,9 @@ class EvolvedNNModel(BaseModel):
         self.feature_names_: list[str] | None = None
         self.best_iteration_: int | None = None
         self.calibrator_: ProbabilityCalibrator | None = None
+        self.multi_calibrator_: MultiHeadCalibrator | None = None
+        self.multi_head_spec_: MultiHeadSpec | None = None
+        self.primary_horizon_: int | None = None
         self._importance_cache: pd.Series | None = None
         # Cached eval network reused across predict() calls (built lazily, reset on
         # fit/load). Avoids rebuilding + reloading weights every bar in run/live mode.
@@ -73,12 +85,21 @@ class EvolvedNNModel(BaseModel):
         compute_importance: bool | None = None,
         seed_genome: NNGenome | None = None,
         seed_state: dict[str, object] | None = None,
+        prediction: PredictionConfig | None = None,
+        multi_targets: pd.DataFrame | None = None,
     ) -> EvolvedNNModel:
         """Evolve architecture genes, train the best candidate, optionally calibrate."""
         if len(x) != len(y):
             raise ValueError("x and y must have the same length.")
+        if prediction is not None:
+            self.multi_head_spec_ = MultiHeadSpec.from_prediction(prediction)
+            self.primary_horizon_ = prediction.horizon
+        elif self.multi_head_spec_ is None:
+            self.primary_horizon_ = None
+
         self.feature_names_ = list(x.columns)
         self.calibrator_ = None
+        self.multi_calibrator_ = None
         self._importance_cache = None
         self._infer_model = None
         self._infer_device = None
@@ -87,7 +108,12 @@ class EvolvedNNModel(BaseModel):
             val_fraction = self.config.val_fraction
 
         x_arr = x.to_numpy(dtype=np.float64)
-        y_arr = y.to_numpy(dtype=np.float64)
+        if self.multi_head_spec_ is not None and multi_targets is not None:
+            if len(multi_targets) != len(x):
+                raise ValueError("multi_targets must align with x.")
+            y_arr = targets_to_matrix(multi_targets, self.multi_head_spec_)
+        else:
+            y_arr = y.to_numpy(dtype=np.float64).reshape(-1, 1)
         has_val = 0.0 < val_fraction < 0.5 and len(x_arr) >= 200
         split = int(len(x_arr) * (1.0 - val_fraction)) if has_val else len(x_arr)
 
@@ -101,6 +127,9 @@ class EvolvedNNModel(BaseModel):
             else compute_importance
         )
 
+        mh = self.multi_head_spec_
+        ph = self.primary_horizon_
+
         cache = build_training_cache(
             x_arr,
             y_arr,
@@ -109,6 +138,7 @@ class EvolvedNNModel(BaseModel):
             sample_weight=sample_weight,
             val_fraction=val_fraction,
             split=split,
+            multi_head=mh,
         )
 
         def _initial_state(genome: NNGenome) -> dict[str, object] | None:
@@ -136,6 +166,8 @@ class EvolvedNNModel(BaseModel):
                 refit_full=False,
                 cache=cache,
                 initial_state=_initial_state(genome),
+                multi_head=mh,
+                primary_horizon=ph,
             )
             return result.val_loss, genome, result
 
@@ -153,6 +185,8 @@ class EvolvedNNModel(BaseModel):
                 refit_full=self.config.refit_full_after_es,
                 cache=cache,
                 initial_state=seed_state if seed_genome is not None else None,
+                multi_head=mh,
+                primary_horizon=ph,
             )
             logger.info(
                 "evolved_nn fast_fit genome=%s val_loss=%.5f",
@@ -245,6 +279,8 @@ class EvolvedNNModel(BaseModel):
                 refit_full=self.config.refit_full_after_es,
                 cache=cache,
                 initial_state=_initial_state(best_genome),
+                multi_head=mh,
+                primary_horizon=ph,
             )
             if best_trained.val_loss < trained.val_loss:
                 trained = best_trained
@@ -255,24 +291,56 @@ class EvolvedNNModel(BaseModel):
         self.best_iteration_ = trained.best_epoch
 
         if self.task == "classification" and self.config.calibration != "none" and has_val:
-            raw_val = predict_genome(
-                x_arr[split:],
-                self.genome_,
-                self.state_dict_,
-                self.scaler_,
-                self.config,
-                task=self.task,
-            )
-            self.calibrator_ = ProbabilityCalibrator.fit(
-                raw_val,
-                y_arr[split:],
-                self.config.calibration,
-            )
+            if mh is not None and ph is not None:
+                raw_logits = predict_genome(
+                    x_arr[split:],
+                    self.genome_,
+                    self.state_dict_,
+                    self.scaler_,
+                    self.config,
+                    task=self.task,
+                    multi_head=mh,
+                    primary_horizon=ph,
+                    model=self._inference_model(),
+                    return_logits=True,
+                )
+                parsed = parse_structured_predictions(
+                    raw_logits, mh, primary_horizon=ph
+                )
+                raw_by_h = {h: parsed[h]["p_up"] for h in mh.horizons}
+                labels_by_h = {
+                    h: y_arr[split:, mh.direction_index(h)] for h in mh.horizons
+                }
+                self.multi_calibrator_ = MultiHeadCalibrator.fit(
+                    raw_by_h,
+                    labels_by_h,
+                    mh.horizons,
+                    self.config.calibration,
+                )
+            else:
+                raw_val = predict_genome(
+                    x_arr[split:],
+                    self.genome_,
+                    self.state_dict_,
+                    self.scaler_,
+                    self.config,
+                    task=self.task,
+                )
+                y_cal = y_arr[split:].ravel()
+                self.calibrator_ = ProbabilityCalibrator.fit(
+                    raw_val,
+                    y_cal,
+                    self.config.calibration,
+                )
 
         if run_importance and has_val and self.task == "classification":
+            if mh is not None and ph is not None:
+                y_imp = y_arr[split:, mh.direction_index(ph)]
+            else:
+                y_imp = y_arr[split:].ravel()
             imp = permutation_importance(
                 x_arr[split:],
-                y_arr[split:],
+                y_imp,
                 self.genome_,
                 self.state_dict_,
                 self.scaler_,
@@ -281,6 +349,8 @@ class EvolvedNNModel(BaseModel):
                 feature_names=self.feature_names_,
                 rng=rng,
                 model=self._inference_model(),
+                multi_head=mh,
+                primary_horizon=ph,
             )
             self._importance_cache = pd.Series(imp, name="permutation").sort_values(
                 ascending=False
@@ -295,6 +365,7 @@ class EvolvedNNModel(BaseModel):
         device = resolve_device(self.config)
         if self._infer_model is None or self._infer_device != device:
             input_dim = len(self.feature_names_ or [])
+            n_out = self.multi_head_spec_.n_outputs if self.multi_head_spec_ is not None else 1
             self._infer_model = build_inference_model(
                 input_dim,
                 self.genome_,
@@ -302,6 +373,7 @@ class EvolvedNNModel(BaseModel):
                 self.config,
                 task=self.task,
                 device=device,
+                n_outputs=n_out,
             )
             self._infer_device = device
         return self._infer_model
@@ -320,10 +392,53 @@ class EvolvedNNModel(BaseModel):
             self.config,
             task=self.task,
             model=self._inference_model(),
+            multi_head=self.multi_head_spec_,
+            primary_horizon=self.primary_horizon_,
         )
+        if self.multi_calibrator_ is not None and self.primary_horizon_ is not None:
+            return self.multi_calibrator_.transform(self.primary_horizon_, raw)
         if self.calibrator_ is not None:
             return self.calibrator_.transform(raw)
         return raw
+
+    def predict_logits(self, x: pd.DataFrame) -> np.ndarray:
+        """Return raw multi-head logits (``n_rows x n_outputs``) when trained multi-horizon."""
+        if self.multi_head_spec_ is None:
+            raise RuntimeError("predict_logits requires a multi-head model.")
+        if self.feature_names_ is not None:
+            x = x[self.feature_names_]
+        return predict_genome(
+            x.to_numpy(dtype=np.float64),
+            self.genome_,
+            self.state_dict_,
+            self.scaler_,
+            self.config,
+            task=self.task,
+            model=self._inference_model(),
+            multi_head=self.multi_head_spec_,
+            primary_horizon=self.primary_horizon_,
+            return_logits=True,
+        )
+
+    def predict_structured(self, x: pd.DataFrame) -> dict[int, dict[str, np.ndarray | float]]:
+        """Parse multi-head outputs into per-horizon quantile returns and P(up)."""
+        if self.multi_head_spec_ is None or self.primary_horizon_ is None:
+            raise RuntimeError("predict_structured requires a multi-head model.")
+        logits = self.predict_logits(x)
+        parsed = parse_structured_predictions(
+            logits,
+            self.multi_head_spec_,
+            primary_horizon=self.primary_horizon_,
+        )
+        if self.multi_calibrator_ is not None:
+            for h, block in parsed.items():
+                if isinstance(block.get("p_up"), np.ndarray):
+                    block["p_up"] = self.multi_calibrator_.transform(h, block["p_up"])
+        elif self.calibrator_ is not None:
+            for h, block in parsed.items():
+                if h == self.primary_horizon_ and isinstance(block.get("p_up"), np.ndarray):
+                    block["p_up"] = self.calibrator_.transform(block["p_up"])
+        return parsed
 
     def save(self, path: str) -> None:
         """Persist weights, genome, scaler and optional calibration sidecars."""
@@ -338,6 +453,8 @@ class EvolvedNNModel(BaseModel):
             "task": self.task,
             "best_epoch": self.best_iteration_,
             "feature_names": self.feature_names_,
+            "multi_head": self.multi_head_spec_.to_dict() if self.multi_head_spec_ else None,
+            "primary_horizon": self.primary_horizon_,
         }
         torch.save(payload, path)
 
@@ -359,11 +476,13 @@ class EvolvedNNModel(BaseModel):
         )
 
         sidecar = path_obj.with_name(path_obj.name + CALIBRATION_SUFFIX)
-        if self.calibrator_ is not None:
-            sidecar.write_text(
-                json.dumps(self.calibrator_.to_dict(), indent=2),
-                encoding="utf-8",
-            )
+        cal_payload = None
+        if self.multi_calibrator_ is not None:
+            cal_payload = self.multi_calibrator_.to_dict()
+        elif self.calibrator_ is not None:
+            cal_payload = self.calibrator_.to_dict()
+        if cal_payload is not None:
+            sidecar.write_text(json.dumps(cal_payload, indent=2), encoding="utf-8")
         elif sidecar.exists():
             sidecar.unlink()
 
@@ -379,6 +498,11 @@ class EvolvedNNModel(BaseModel):
         model.state_dict_ = payload["state_dict"]
         model.best_iteration_ = payload.get("best_epoch")
         model.feature_names_ = list(payload.get("feature_names") or [])
+        mh_payload = payload.get("multi_head")
+        if mh_payload:
+            model.multi_head_spec_ = MultiHeadSpec.from_dict(mh_payload)
+            ph = payload.get("primary_horizon")
+            model.primary_horizon_ = int(ph) if ph is not None else model.multi_head_spec_.horizons[-1]
 
         genome_path = path_obj.with_name(path_obj.name + GENOME_SUFFIX)
         if genome_path.exists():
@@ -398,9 +522,12 @@ class EvolvedNNModel(BaseModel):
 
         sidecar = path_obj.with_name(path_obj.name + CALIBRATION_SUFFIX)
         if sidecar.exists():
-            model.calibrator_ = ProbabilityCalibrator.from_dict(
-                json.loads(sidecar.read_text(encoding="utf-8"))
-            )
+            payload_cal = json.loads(sidecar.read_text(encoding="utf-8"))
+            loaded = load_calibrator_sidecar(payload_cal)
+            if isinstance(loaded, MultiHeadCalibrator):
+                model.multi_calibrator_ = loaded
+            else:
+                model.calibrator_ = loaded
         return model
 
     def feature_importance(self) -> pd.Series:

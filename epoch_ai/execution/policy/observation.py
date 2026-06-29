@@ -1,0 +1,52 @@
+"""Build fixed-size policy observation vectors from forecasts + portfolio state."""
+
+from __future__ import annotations
+
+import numpy as np
+
+from epoch_ai.config.settings import AppConfig
+from epoch_ai.execution.portfolio_state import PortfolioState
+from epoch_ai.services.types import HorizonForecast, MultiHorizonPredictionResult
+
+
+def decision_horizons(config: AppConfig) -> list[int]:
+    """Horizons included in the policy observation."""
+    if config.trading.decision_horizons:
+        return list(config.trading.decision_horizons)
+    return list(config.prediction.horizons)
+
+
+def observation_dim(config: AppConfig) -> int:
+    """Flat observation size: 3 features per horizon + 4 portfolio scalars."""
+    return len(decision_horizons(config)) * 3 + 4
+
+
+def build_observation(
+    multi: MultiHorizonPredictionResult | None,
+    portfolio: PortfolioState,
+    config: AppConfig,
+) -> np.ndarray:
+    """Concatenate reliable per-horizon features and portfolio context."""
+    horizons = decision_horizons(config)
+    floor = config.trading.reliability_floor
+    by_h: dict[int, HorizonForecast] = {}
+    if multi is not None:
+        by_h = {f.horizon: f for f in multi.horizons}
+
+    parts: list[float] = []
+    for h in horizons:
+        forecast = by_h.get(h)
+        if forecast is None or not forecast.reliable or forecast.confidence < floor:
+            parts.extend([0.5, 0.0, 0.0])
+        else:
+            parts.extend([forecast.p_up, forecast.exp_return, forecast.confidence])
+
+    parts.extend(
+        [
+            portfolio.position_weight,
+            portfolio.drawdown(),
+            portfolio.session_loss(),
+            float(portfolio.bars_in_position) / max(1, config.trading.max_hold_bars),
+        ]
+    )
+    return np.asarray(parts, dtype=np.float32)

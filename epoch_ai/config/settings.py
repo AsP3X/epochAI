@@ -483,6 +483,7 @@ class PromotionConfig(BaseModel):
     metric: Literal[
         "oos_logloss",
         "oos_brier",
+        "oos_brier_weighted",
         "oos_accuracy",
         "oos_auc",
         "oos_directional_accuracy",
@@ -530,6 +531,140 @@ class RiskConfig(BaseModel):
     max_drawdown_halt: float | None = None
     max_daily_loss: float | None = None
     cooldown_bars: int = 0
+
+
+class TradingConfig(BaseModel):
+    """Learned/heuristic trading policy settings (execution layer only)."""
+
+    policy_backend: Literal[
+        "threshold",
+        "baseline",
+        "learned",
+        "learned_with_baseline_fallback",
+    ] = Field(
+        default="baseline",
+        description="threshold=RiskManager; baseline=ensemble; learned=PPO; fallback=learned then baseline.",
+    )
+    reliability_floor: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Drop forecast heads below this confidence for policy observations.",
+    )
+    max_position_fraction: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Hard cap on abs(target_weight) as a fraction of max_leverage.",
+    )
+    max_drawdown_kill: float = Field(
+        default=0.20,
+        ge=0.0,
+        le=1.0,
+        description="Force flat when peak-to-trough drawdown exceeds this fraction.",
+    )
+    max_hold_bars: int = Field(
+        default=1440,
+        ge=1,
+        description="Force-close positions held longer than this many bars (~1 day at 1m).",
+    )
+    funding_rate_per_bar: float = Field(
+        default=0.0,
+        description="Approximate perp funding accrual per bar on open positions.",
+    )
+    trade_frequency: Literal["selective", "active"] = Field(
+        default="selective",
+        description="Selective policies trade less often; active allows tighter dead bands.",
+    )
+    decision_horizons: list[int] = Field(
+        default_factory=list,
+        description="Horizons fed to the policy; empty uses all configured prediction horizons.",
+    )
+    action_log_path: str = "artifacts/logs/action_log.jsonl"
+    session_state_path: str = "artifacts/session_state.json"
+
+
+class PolicyPromotionConfig(BaseModel):
+    """Challenger/champion gate for the learned PPO trading policy."""
+
+    enabled: bool = True
+    eval_bars: int | None = Field(
+        default=None,
+        ge=1,
+        description="Holdout bars for policy eval (null = promotion.eval_bars).",
+    )
+    metric: Literal["risk_adjusted_return", "sharpe", "total_return"] = Field(
+        default="risk_adjusted_return",
+        description="Primary gate metric (higher is better).",
+    )
+    min_improvement: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Required improvement over champion to promote.",
+    )
+    champion_path: str = "artifacts/policy/champion.pt"
+    require_beat_baseline: bool = True
+    require_beat_buy_hold: bool = True
+
+
+class RLConfig(BaseModel):
+    """PPO hyperparameters and artifact paths for the learned policy."""
+
+    enabled: bool = False
+    policy_path: str = "artifacts/policy/ppo_policy.pt"
+    hidden_sizes: list[int] = Field(default_factory=lambda: [64, 32])
+    learning_rate: float = 3e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_ratio: float = 0.2
+    train_epochs: int = 4
+    rollout_steps: int = 256
+    total_updates: int = 50
+    drawdown_penalty: float = 0.5
+    sharpe_scale: float = 1.0
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    promotion: PolicyPromotionConfig = Field(default_factory=PolicyPromotionConfig)
+
+
+class AdaptationConfig(BaseModel):
+    """Post-initial coarse retrain cadence and action-log feedback knobs."""
+
+    enabled: bool = True
+    coarse_step_size: int = Field(
+        default=4320,
+        ge=1,
+        description="Walk-forward step size for scheduled auto-retrain (~3 days at 1m).",
+    )
+    coarse_retrain_frequency: int = Field(
+        default=1,
+        ge=1,
+        description="Retrain every N coarse steps during scheduled auto-retrain.",
+    )
+    schedule_interval_hours: float = Field(
+        default=24.0,
+        gt=0.0,
+        description="Default sleep between schedule-retrain cycles.",
+    )
+    holdout_bars: int | None = Field(
+        default=None,
+        ge=1,
+        description="Final holdout slice (null = promotion.eval_bars).",
+    )
+    use_action_log_for_retrain: bool = True
+    action_log_min_rows: int = Field(
+        default=50,
+        ge=1,
+        description="Minimum action-log rows before boosting live-experience weights.",
+    )
+    action_log_weight_boost: float = Field(
+        default=2.0,
+        ge=1.0,
+        description="Multiply sample weights for bars present in the action log.",
+    )
+
+    def resolved_holdout_bars(self, promotion: PromotionConfig) -> int:
+        """Holdout size shared by predictor retrain, policy eval, and acceptance."""
+        return self.holdout_bars if self.holdout_bars is not None else promotion.eval_bars
 
 
 class ExecutionConfig(BaseModel):
@@ -634,6 +769,9 @@ class AppConfig(BaseModel):
     promotion: PromotionConfig = Field(default_factory=PromotionConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    trading: TradingConfig = Field(default_factory=TradingConfig)
+    rl: RLConfig = Field(default_factory=RLConfig)
+    adaptation: AdaptationConfig = Field(default_factory=AdaptationConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)

@@ -73,6 +73,10 @@ class PaperExecutor(TradeExecutor):
         return self._trader.equity
 
     @property
+    def position_weight(self) -> float:
+        return self._trader.position_weight
+
+    @property
     def fills(self) -> list[Fill]:
         return self._trader.fills
 

@@ -7,17 +7,29 @@ from dataclasses import dataclass
 import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
+from epoch_ai.execution.action_log import ActionLog
 from epoch_ai.execution.paper_trader import PaperTrader
+from epoch_ai.execution.policy.executor import decide_trading_action, load_ppo_policy
+from epoch_ai.execution.policy.ppo_policy import PPOPolicy
 from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.execution.safety import SafetyScorer
+from epoch_ai.execution.session_state import SessionState
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.learning.retrain_job import run_retrain
-from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
+from epoch_ai.logging_system.multi_horizon_log import (
+    PendingHorizonLog,
+    log_multi_horizon_bar,
+    resolve_pending_horizons,
+)
+from epoch_ai.logging_system.schemas import PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.base import BaseModel
+from epoch_ai.models.evolved_nn_model import EvolvedNNModel
 from epoch_ai.models.factory import build_model
+from epoch_ai.services.types import build_multi_horizon_from_structured
 from epoch_ai.utils.logging import get_logger
+from epoch_ai.utils.timeframe import timeframe_to_minutes
 
 logger = get_logger(__name__)
 
@@ -30,14 +42,6 @@ class LiveLoopResult:
     fills: int
     final_equity: float
     retrain_count: int = 0
-
-
-@dataclass(slots=True)
-class _PendingPrediction:
-    prediction_id: int
-    entry_pos: int
-    entry_price: float
-    raw_prediction: float
 
 
 @dataclass(slots=True)
@@ -55,7 +59,9 @@ class _LiveContext:
     retrain_every: int
     store: PredictionStore | None = None
     model_version: str = "unknown"
-    pending: list[_PendingPrediction] | None = None
+    pending: list[PendingHorizonLog] | None = None
+    ppo: PPOPolicy | None = None
+    action_log: ActionLog | None = None
     bars_since_retrain: int = 0
     retrain_count: int = 0
 
@@ -106,7 +112,7 @@ def run_bar_loop(
         risk_manager=RiskManager(config.risk, config.prediction, config.safety),
         safety_scorer=SafetyScorer(config.safety) if config.safety.enabled else None,
         trader=PaperTrader(config.risk),
-        portfolio=PortfolioState.initial(config.risk.initial_capital),
+        portfolio=_load_portfolio(config),
         model=model,
         pipeline=pipeline,
         market=market,
@@ -115,6 +121,8 @@ def run_bar_loop(
         store=store,
         model_version=model_version,
         pending=[] if store is not None else None,
+        ppo=load_ppo_policy(config) if config.trading.policy_backend.startswith("learned") else None,
+        action_log=ActionLog(config.trading.action_log_path),
     )
 
     last = len(data) if end_pos is None else min(end_pos, len(data))
@@ -128,9 +136,35 @@ def run_bar_loop(
         raw_pred = float(ctx.model.predict(data[feature_cols].iloc[[pos]])[0])
         feat_row = data[feature_cols].iloc[pos]
         safety = ctx.safety_scorer.assess(feat_row) if ctx.safety_scorer else None
-        decision = ctx.risk_manager.decide(raw_pred, ctx.portfolio, safety=safety)
+        multi = None
+        if (
+            config.trading.policy_backend != "threshold"
+            and isinstance(ctx.model, EvolvedNNModel)
+            and ctx.model.multi_head_spec_ is not None
+        ):
+            structured = ctx.model.predict_structured(data[feature_cols].iloc[[pos]])
+            multi = build_multi_horizon_from_structured(
+                structured,
+                0,
+                as_of=pd.Timestamp(ts),
+                last_close=price,
+                model_version=ctx.model_version,
+                symbol=symbol,
+                timeframe=config.timeframe,
+                horizons=list(ctx.model.multi_head_spec_.horizons),
+                horizon_label_fn=config.prediction.horizon_label,
+                bar_minutes=timeframe_to_minutes(config.timeframe),
+            )
+        decision = decide_trading_action(
+            config,
+            raw_prediction=raw_pred,
+            multi=multi,
+            portfolio=ctx.portfolio,
+            ppo=ctx.ppo,
+            safety=safety,
+        )
         prev_equity = ctx.trader.equity
-        ctx.trader.rebalance(str(ts), price, decision)
+        fill = ctx.trader.rebalance(str(ts), price, decision)
         period_ret = float(data["forward_return"].iloc[pos]) / config.prediction.horizon
         ctx.trader.mark_to_market(period_ret)
         lost = ctx.trader.equity < prev_equity and ctx.trader.position_weight != 0
@@ -138,32 +172,77 @@ def run_bar_loop(
             ctx.trader.equity,
             lost_trade=lost,
             cooldown_bars=config.risk.cooldown_bars,
+            position_weight=ctx.trader.position_weight,
         )
+        if ctx.action_log is not None:
+            ctx.action_log.log_step(
+                timestamp=str(ts),
+                symbol=symbol,
+                model_version=ctx.model_version,
+                policy_backend=config.trading.policy_backend,
+                raw_prediction=raw_pred,
+                decision=decision,
+                equity=ctx.trader.equity,
+                position_weight=ctx.trader.position_weight,
+                multi=multi,
+                fill_fee=fill.fee if fill is not None else None,
+                bar_return=period_ret,
+            )
+        SessionState.from_portfolio(ctx.portfolio).save(config.trading.session_state_path)
         if ctx.store is not None and ctx.pending is not None:
             feature_row = {
                 k: float(v) for k, v in data[feature_cols].iloc[pos].to_dict().items()
             }
-            pred_id = ctx.store.log_prediction(
-                PredictionLog(
-                    timestamp=str(ts),
-                    symbol=symbol,
-                    model_version=ctx.model_version,
-                    horizon=config.prediction.horizon,
-                    prediction=raw_pred,
-                    confidence=decision.confidence,
-                    signal=decision.signal,
-                    entry_price=price,
-                    features=feature_row,
+            if isinstance(ctx.model, EvolvedNNModel) and ctx.model.multi_head_spec_ is not None:
+                # Reuse the forecast computed for the policy decision when available;
+                # only the threshold backend leaves ``multi`` unset here.
+                if multi is None:
+                    structured = ctx.model.predict_structured(data[feature_cols].iloc[[pos]])
+                    multi = build_multi_horizon_from_structured(
+                        structured,
+                        0,
+                        as_of=pd.Timestamp(ts),
+                        last_close=price,
+                        model_version=ctx.model_version,
+                        symbol=symbol,
+                        timeframe=config.timeframe,
+                        horizons=list(ctx.model.multi_head_spec_.horizons),
+                        horizon_label_fn=config.prediction.horizon_label,
+                        bar_minutes=timeframe_to_minutes(config.timeframe),
+                    )
+                ctx.pending.extend(
+                    log_multi_horizon_bar(
+                        ctx.store,
+                        multi,
+                        signal=decision.signal,
+                        base_features=feature_row,
+                        entry_price=price,
+                        entry_index=pos,
+                    )
                 )
-            )
-            ctx.pending.append(
-                _PendingPrediction(
-                    prediction_id=pred_id,
-                    entry_pos=pos,
-                    entry_price=price,
-                    raw_prediction=raw_pred,
+            else:
+                pred_id = ctx.store.log_prediction(
+                    PredictionLog(
+                        timestamp=str(ts),
+                        symbol=symbol,
+                        model_version=ctx.model_version,
+                        horizon=config.prediction.horizon,
+                        prediction=raw_pred,
+                        confidence=decision.confidence,
+                        signal=decision.signal,
+                        entry_price=price,
+                        features=feature_row,
+                    )
                 )
-            )
+                ctx.pending.append(
+                    PendingHorizonLog(
+                        prediction_id=pred_id,
+                        entry_index=pos,
+                        entry_price=price,
+                        horizon=config.prediction.horizon,
+                        raw_prediction=raw_pred,
+                    )
+                )
         ctx.bars_since_retrain += 1
         if ctx.retrain_every and ctx.bars_since_retrain >= ctx.retrain_every:
             _maybe_retrain(ctx, pos)
@@ -183,6 +262,13 @@ def run_bar_loop(
     )
 
 
+def _load_portfolio(config: AppConfig) -> PortfolioState:
+    saved = SessionState.load(config.trading.session_state_path)
+    if saved is not None:
+        return saved.to_portfolio()
+    return PortfolioState.initial(config.risk.initial_capital)
+
+
 def _maybe_retrain(ctx: _LiveContext, pos: int) -> None:
     """Refit on all data up to ``pos`` (causal expanding window)."""
     x_train = ctx.data[ctx.feature_cols].iloc[:pos]
@@ -197,33 +283,18 @@ def _maybe_retrain(ctx: _LiveContext, pos: int) -> None:
 
 
 def _resolve_pending_outcomes(ctx: _LiveContext, current_pos: int, close: pd.Series) -> None:
-    """Log realised outcomes once the prediction horizon has elapsed."""
+    """Log realised outcomes once each prediction horizon has elapsed."""
     if not ctx.pending or ctx.store is None:
         return
-    horizon = ctx.config.prediction.horizon
-    threshold = ctx.config.prediction.threshold
-    still_pending: list[_PendingPrediction] = []
-
-    for pending in ctx.pending:
-        if current_pos - pending.entry_pos < horizon:
-            still_pending.append(pending)
-            continue
-        resolve_pos = pending.entry_pos + horizon
-        resolve_ts = ctx.data.index[resolve_pos]
-        exit_price = float(close.loc[resolve_ts])
-        forward_ret = exit_price / pending.entry_price - 1.0
-        ctx.store.log_outcome(
-            OutcomeLog(
-                prediction_id=pending.prediction_id,
-                resolve_timestamp=str(resolve_ts),
-                forward_return=forward_ret,
-                realized_label=int(forward_ret > threshold),
-                exit_price=exit_price,
-                context={"runtime_session": True},
-            )
-        )
-
-    ctx.pending = still_pending
+    ctx.pending = resolve_pending_horizons(
+        ctx.pending,
+        current_index=current_pos,
+        close=close,
+        index=ctx.data.index,
+        threshold=ctx.config.prediction.threshold,
+        store=ctx.store,
+        context={"runtime_session": True},
+    )
 
 
 def run_scheduled_retrain(config: AppConfig, *, min_new_samples: int = 50) -> int:

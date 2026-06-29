@@ -119,6 +119,88 @@ class ProbabilityCalibrator:
         )
 
 
+@dataclass(slots=True)
+class MultiHeadCalibrator:
+    """Per-horizon probability calibrators for multi-head classification models."""
+
+    horizons: tuple[int, ...]
+    calibrators: dict[int, ProbabilityCalibrator | None]
+
+    @classmethod
+    def fit(
+        cls,
+        raw_by_horizon: dict[int, np.ndarray],
+        labels_by_horizon: dict[int, np.ndarray],
+        horizons: tuple[int, ...],
+        method: str,
+    ) -> MultiHeadCalibrator:
+        """Fit one calibrator per horizon (``None`` when fit is not possible)."""
+        fitted: dict[int, ProbabilityCalibrator | None] = {}
+        for h in horizons:
+            raw = np.asarray(raw_by_horizon[h], dtype=float).ravel()
+            labels = np.asarray(labels_by_horizon[h], dtype=float).ravel()
+            fitted[h] = ProbabilityCalibrator.fit(raw, labels, method)
+        return cls(horizons=horizons, calibrators=fitted)
+
+    def transform(self, horizon: int, raw: np.ndarray) -> np.ndarray:
+        """Calibrate raw P(up) for one horizon; passthrough when no calibrator exists."""
+        raw = np.asarray(raw, dtype=float).ravel()
+        cal = self.calibrators.get(horizon)
+        if cal is None:
+            return np.clip(raw, 0.0, 1.0)
+        return cal.transform(raw)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "multi_head",
+            "horizons": list(self.horizons),
+            "per_horizon": {
+                str(h): (self.calibrators[h].to_dict() if self.calibrators[h] else None)
+                for h in self.horizons
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MultiHeadCalibrator:
+        horizons = tuple(int(h) for h in data["horizons"])
+        per = data.get("per_horizon") or {}
+        calibrators: dict[int, ProbabilityCalibrator | None] = {}
+        for h in horizons:
+            payload = per.get(str(h))
+            calibrators[h] = (
+                ProbabilityCalibrator.from_dict(payload) if payload is not None else None
+            )
+        return cls(horizons=horizons, calibrators=calibrators)
+
+
+def load_calibrator_sidecar(data: dict[str, Any]) -> ProbabilityCalibrator | MultiHeadCalibrator:
+    """Load either a single-head or multi-head calibrator sidecar."""
+    if data.get("type") == "multi_head" or "per_horizon" in data:
+        return MultiHeadCalibrator.from_dict(data)
+    return ProbabilityCalibrator.from_dict(data)
+
+
+def quantile_interval_coverage(
+    realized: np.ndarray,
+    q_low: np.ndarray,
+    q_high: np.ndarray,
+) -> float:
+    """Fraction of samples where ``realized`` falls in ``[q_low, q_high]``."""
+    realized = np.asarray(realized, dtype=float)
+    q_low = np.asarray(q_low, dtype=float)
+    q_high = np.asarray(q_high, dtype=float)
+    if realized.size == 0:
+        return float("nan")
+    return float(np.mean((realized >= q_low) & (realized <= q_high)))
+
+
+def coverage_reliability(coverage: float, *, target: float = 0.8) -> float:
+    """Reliability weight from quantile coverage (1.0 when coverage equals ``target``)."""
+    if coverage is None or np.isnan(coverage):
+        return 0.0
+    return max(0.0, 1.0 - abs(coverage - target) / target)
+
+
 def _logit(p: np.ndarray) -> np.ndarray:
     p = np.clip(p, _EPS, 1.0 - _EPS)
     return np.log(p / (1.0 - p))

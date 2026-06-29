@@ -74,6 +74,75 @@ def classification_step_metrics(
     }
 
 
+def confidence_weighted_brier(
+    briers: dict[int, float],
+    weights: dict[int, float],
+) -> float:
+    """Confidence-weighted average Brier across horizons (coverage-based weights)."""
+    num = 0.0
+    den = 0.0
+    for h, brier in briers.items():
+        w = weights.get(h, 0.0)
+        if w <= 0.0 or brier is None or np.isnan(brier):
+            continue
+        num += w * brier
+        den += w
+    return float(num / den) if den > 0.0 else float("nan")
+
+
+def multi_horizon_classification_step_metrics(
+    structured: dict[int, dict[str, np.ndarray]],
+    labels_by_horizon: dict[int, np.ndarray],
+    returns_by_horizon: dict[int, np.ndarray],
+    *,
+    long_threshold: float,
+    short_threshold: float,
+    primary_horizon: int,
+) -> dict[str, float]:
+    """Per-horizon OOS metrics plus confidence-weighted aggregate Brier."""
+    from epoch_ai.models.calibration import coverage_reliability, quantile_interval_coverage
+
+    metrics: dict[str, float] = {}
+    briers: dict[int, float] = {}
+    weights: dict[int, float] = {}
+
+    for h, block in structured.items():
+        p = np.clip(np.asarray(block["p_up"], dtype=float), _EPS, 1.0 - _EPS)
+        y = np.asarray(labels_by_horizon[h], dtype=float)
+        brier = float(np.mean((p - y) ** 2))
+        briers[h] = brier
+        metrics[f"oos_brier_h{h}"] = brier
+        metrics[f"oos_logloss_h{h}"] = float(
+            np.mean(-(y * np.log(p) + (1.0 - y) * np.log(1.0 - p)))
+        )
+        metrics[f"oos_auc_h{h}"] = _safe_auc(y, p)
+
+        q_low = np.asarray(block["q10"], dtype=float)
+        q_high = np.asarray(block["q90"], dtype=float)
+        realized = np.asarray(returns_by_horizon[h], dtype=float)
+        coverage = quantile_interval_coverage(realized, q_low, q_high)
+        metrics[f"oos_coverage_h{h}"] = coverage
+        weights[h] = coverage_reliability(coverage)
+
+        q50 = np.asarray(block["q50"], dtype=float)
+        err = realized - q50
+        pinballs = []
+        for qt in (0.1, 0.5, 0.9):
+            pinballs.append(float(np.maximum(qt * err, (qt - 1.0) * err).mean()))
+        metrics[f"oos_pinball_h{h}"] = float(np.mean(pinballs))
+
+    metrics["oos_brier_weighted"] = confidence_weighted_brier(briers, weights)
+    if primary_horizon in structured:
+        primary = classification_step_metrics(
+            structured[primary_horizon]["p_up"],
+            labels_by_horizon[primary_horizon],
+            long_threshold=long_threshold,
+            short_threshold=short_threshold,
+        )
+        metrics.update(primary)
+    return metrics
+
+
 def regression_step_metrics(preds: np.ndarray, returns: np.ndarray) -> dict[str, float]:
     """Compute OOS regression metrics (directional accuracy + RMSE) for one step."""
     pred = np.asarray(preds, dtype=float)

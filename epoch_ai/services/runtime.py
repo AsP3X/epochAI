@@ -19,13 +19,27 @@ from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.base import BaseModel
+from epoch_ai.models.evolved_nn_model import EvolvedNNModel
 from epoch_ai.models.registry import ModelRegistry
-from epoch_ai.services.types import PredictionResult, RuntimeStatus
+from epoch_ai.services.types import (
+    HorizonForecast,
+    MultiHorizonPredictionResult,
+    PredictionResult,
+    RuntimeStatus,
+    build_horizon_forecast,
+)
 from epoch_ai.utils.logging import get_logger
+from epoch_ai.utils.timeframe import timeframe_to_minutes
 
 logger = get_logger(__name__)
 
-__all__ = ["PredictionResult", "RuntimeService", "RuntimeStatus"]
+__all__ = [
+    "HorizonForecast",
+    "MultiHorizonPredictionResult",
+    "PredictionResult",
+    "RuntimeService",
+    "RuntimeStatus",
+]
 
 
 class RuntimeService:
@@ -94,6 +108,68 @@ class RuntimeService:
             decision=decision,
             model_version=self._model_version or "unknown",
             features={k: float(v) for k, v in row.iloc[0].items()},
+        )
+
+    def predict_multi_horizon(self, market: pd.DataFrame) -> MultiHorizonPredictionResult:
+        """Predict all configured horizons on the latest bar."""
+        if market.empty:
+            raise ValueError("Cannot predict on empty market data.")
+        features = self.pipeline.transform(market, log_stats=False)
+        if features.empty:
+            raise ValueError(
+                f"Feature pipeline produced no rows for the {len(market)}-bar window "
+                "(all rows dropped as feature warm-up/NaN). Provide a longer warmup "
+                "window or data with the required context columns (e.g. funding_rate)."
+            )
+        model = self._require_model()
+        ts = pd.Timestamp(market.index[-1])
+        last_close = float(market["close"].iloc[-1])
+        row = features.iloc[[-1]]
+        bar_minutes = timeframe_to_minutes(self.config.timeframe)
+        pred_cfg = self.config.prediction
+        forecasts: list[HorizonForecast] = []
+
+        if isinstance(model, EvolvedNNModel) and model.multi_head_spec_ is not None:
+            structured = model.predict_structured(row)
+            for h in pred_cfg.horizons:
+                block = structured[h]
+                forecasts.append(
+                    build_horizon_forecast(
+                        as_of=ts,
+                        last_close=last_close,
+                        horizon=h,
+                        horizon_label=pred_cfg.horizon_label(h),
+                        bar_minutes=bar_minutes,
+                        p_up=float(block["p_up"][0]),
+                        q10=float(block["q10"][0]),
+                        q50=float(block["q50"][0]),
+                        q90=float(block["q90"][0]),
+                    )
+                )
+        else:
+            raw = float(model.predict(row)[0])
+            primary = pred_cfg.horizon
+            forecasts.append(
+                build_horizon_forecast(
+                    as_of=ts,
+                    last_close=last_close,
+                    horizon=primary,
+                    horizon_label=pred_cfg.horizon_label(primary),
+                    bar_minutes=bar_minutes,
+                    p_up=raw,
+                    q10=0.0,
+                    q50=0.0,
+                    q90=0.0,
+                )
+            )
+
+        return MultiHorizonPredictionResult(
+            as_of=str(ts),
+            last_close=last_close,
+            model_version=self._model_version or "unknown",
+            symbol=self.config.primary_symbol,
+            timeframe=self.config.timeframe,
+            horizons=forecasts,
         )
 
     def run_session(

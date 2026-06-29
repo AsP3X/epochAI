@@ -149,8 +149,19 @@ walk_forward:
 # -----------------------------------------------------------------------------
 promotion:
   eval_bars: 30000             # ~21 days of 1m bars held out for challenger vs champion
-  metric: oos_logloss          # oos_logloss|oos_brier|oos_rmse (lower better) | oos_accuracy|oos_auc|oos_directional_accuracy (higher)
+  metric: oos_brier_weighted  # conf-weighted per-horizon Brier (multi-head); oos_logloss|oos_brier|...
   min_improvement: 0.0         # required sign-aware improvement over champion (must be strictly positive; a tie never promotes)
+
+# Post-initial coarse auto-retrain + action-log feedback (schedule-retrain --promote).
+adaptation:
+  enabled: true
+  coarse_step_size: 4320       # ~3 days at 1m (larger than initial walk_forward.step_size)
+  coarse_retrain_frequency: 1
+  schedule_interval_hours: 24  # daily default for schedule-retrain
+  holdout_bars: null           # null => promotion.eval_bars (never train on this tail)
+  use_action_log_for_retrain: true
+  action_log_min_rows: 50
+  action_log_weight_boost: 2.0
 
 # -----------------------------------------------------------------------------
 # Pre-trade safety gate (execution only; direction model unchanged).
@@ -177,6 +188,42 @@ risk:
   max_drawdown_halt: null     # e.g. 0.15 to halt new entries after 15% drawdown
   max_daily_loss: null        # e.g. 0.05 to halt after 5% session loss
   cooldown_bars: 0            # flat bars after a losing period
+
+# Learned / baseline trading policy (execution only; predictor stays separate).
+trading:
+  policy_backend: baseline     # threshold|baseline|learned|learned_with_baseline_fallback
+  reliability_floor: 0.35
+  max_position_fraction: 1.0
+  max_drawdown_kill: 0.20
+  max_hold_bars: 1440          # ~1 day at 1m
+  funding_rate_per_bar: 0.0
+  trade_frequency: selective    # selective|active
+  decision_horizons: []         # empty => all prediction.horizons
+  action_log_path: artifacts/logs/action_log.jsonl
+  session_state_path: artifacts/session_state.json
+
+rl:
+  enabled: false
+  policy_path: artifacts/policy/ppo_policy.pt
+  hidden_sizes: [64, 32]
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  train_epochs: 4
+  rollout_steps: 256
+  total_updates: 50
+  drawdown_penalty: 0.5
+  sharpe_scale: 1.0
+  device: auto
+  promotion:
+    enabled: true
+    eval_bars: null            # null => promotion.eval_bars
+    metric: risk_adjusted_return
+    min_improvement: 0.0
+    champion_path: artifacts/policy/champion.pt
+    require_beat_baseline: true
+    require_beat_buy_hold: true
 
 # Live runtime: trained model + live data -> predictions -> trades
 execution:

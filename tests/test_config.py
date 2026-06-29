@@ -193,6 +193,7 @@ def test_shipped_config_yaml_has_promotion():
     assert config.promotion.metric in {
         "oos_logloss",
         "oos_brier",
+        "oos_brier_weighted",
         "oos_rmse",
         "oos_accuracy",
         "oos_auc",
@@ -221,6 +222,8 @@ def test_shipped_config_yaml_loads():
     assert config.features.cross_asset is True
     assert config.features.sentiment is True
     assert config.features.patterns is True
+    assert config.adaptation.schedule_interval_hours == 24.0
+    assert config.rl.promotion.require_beat_baseline is True
     assert config.features.manipulation is True
     assert config.features.higher_timeframe is True
     assert config.features.onchain is True

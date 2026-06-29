@@ -9,13 +9,18 @@ that include historical context.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
 from epoch_ai.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from epoch_ai.services.types import MultiHorizonPredictionResult
 
 logger = get_logger(__name__)
 
@@ -84,6 +89,48 @@ class PredictionStore:
         )
         self._conn.commit()
         return int(cur.lastrowid)
+
+    def log_multi_horizon(
+        self,
+        result: MultiHorizonPredictionResult,
+        *,
+        base_features: dict[str, float] | None = None,
+        entry_price: float | None = None,
+        signal: int = 0,
+    ) -> list[int]:
+        """Insert one prediction row per horizon with band metadata in ``features``."""
+        ids: list[int] = []
+        shared = dict(base_features or {})
+        for forecast in result.horizons:
+            if entry_price and entry_price > 0:
+                ret_q10 = math.log(forecast.price_p10 / entry_price)
+                ret_q90 = math.log(forecast.price_p90 / entry_price)
+            else:
+                ret_q10 = ret_q90 = 0.0
+            features = {
+                **shared,
+                "return_q10": ret_q10,
+                "return_q50": forecast.exp_return,
+                "return_q90": ret_q90,
+                "price_p10": forecast.price_p10,
+                "price_p50": forecast.price_p50,
+                "price_p90": forecast.price_p90,
+                "head_confidence": forecast.confidence,
+                "reliable": forecast.reliable,
+            }
+            pred = PredictionLog(
+                timestamp=result.as_of,
+                symbol=result.symbol,
+                model_version=result.model_version,
+                horizon=forecast.horizon,
+                prediction=forecast.p_up,
+                confidence=forecast.confidence,
+                signal=signal,
+                entry_price=entry_price,
+                features=features,
+            )
+            ids.append(self.log_prediction(pred))
+        return ids
 
     def log_outcome(self, outcome: OutcomeLog) -> None:
         """Insert (or replace) the outcome for a prediction."""

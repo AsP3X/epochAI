@@ -53,8 +53,13 @@ Future Telegram/website interfaces must call these services — see
 | `tune --sweep config/sweeps/example.yaml` | YAML hyperparameter sweep |
 | `retrain --min-new-samples 50` | Retrain from SQLite logs or parquet fallback |
 | `auto-retrain` | Train a challenger; promote to champion only if it beats the holdout metric |
+| `auto-retrain --promote-policy` | Also train/promote PPO when `rl.enabled` |
 | `schedule-retrain --promote` | Periodic retrain loop using the challenger/champion gate |
-| `live --replay` | Historical live-loop replay (offline-safe) |
+| `schedule-retrain --promote --promote-policy` | Daily coarse retrain + policy promotion |
+| `predict --json` | Multi-horizon forecast for the latest bar |
+| `train-policy` | Train PPO on OOS bar replay |
+| `evaluate-holdout` | Score predictor + policy on untouched final holdout |
+| `run --policy baseline` | Override trading policy backend at runtime |
 | `--set walk_forward.step_size=100` | Dotted config overrides on any command |
 
 ## Agent command playbooks
@@ -98,6 +103,11 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
  `step_metrics.py` (OOS logloss/Brier/AUC/threshold-aware) + `weighting.py`
  (shared recency decay used by the engine and the retrain job) +
  `promotion.py` (challenger/champion auto-retrain gate; promotes only if better).
+ `adaptation.py` (coarse scheduled walk-forward overrides) +
+ `policy_promotion.py` (PPO train/promote vs baseline + buy-and-hold on holdout) +
+ `acceptance.py` (`evaluate-holdout` scoring).
+- `epoch_ai/execution/policy/` — baseline ensemble + PPO + guardrails (RL boundary; see ADR 0008).
+- `epoch_ai/execution/action_log.py` — JSONL live bot experience; boosts `retrain` weights.
 - `epoch_ai/backtesting` — backtester + native trading metrics.
 - `epoch_ai/execution` — risk manager + paper trader (separate from prediction).
 - `epoch_ai/services` — **TrainingService** (train mode) and **RuntimeService** (run mode); entry point for future Telegram/website.

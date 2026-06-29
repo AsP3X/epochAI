@@ -24,13 +24,24 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
+import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
-from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
-from epoch_ai.learning.step_metrics import classification_step_metrics, regression_step_metrics
+from epoch_ai.features.pipeline import (
+    FeaturePipeline,
+    build_multi_horizon_targets,
+    build_target,
+    forward_return,
+)
+from epoch_ai.learning.step_metrics import (
+    classification_step_metrics,
+    multi_horizon_classification_step_metrics,
+    regression_step_metrics,
+)
 from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.models.base import BaseModel
+from epoch_ai.models.evolved_nn_model import EvolvedNNModel
 from epoch_ai.models.factory import build_model
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.utils.logging import get_logger
@@ -38,7 +49,7 @@ from epoch_ai.utils.logging import get_logger
 logger = get_logger(__name__)
 
 #: Metrics where a smaller value is better (error/loss); all others are "higher better".
-_LOWER_IS_BETTER = {"oos_logloss", "oos_brier", "oos_rmse"}
+_LOWER_IS_BETTER = {"oos_logloss", "oos_brier", "oos_brier_weighted", "oos_rmse"}
 
 
 @dataclass(slots=True)
@@ -136,8 +147,30 @@ def _evaluate(
     labels: np.ndarray,
     returns: np.ndarray,
     config: AppConfig,
+    *,
+    multi_eval: pd.DataFrame | None = None,
 ) -> dict[str, float]:
     """Score ``model`` on the holdout with the task-appropriate OOS metrics."""
+    if (
+        isinstance(model, EvolvedNNModel)
+        and model.multi_head_spec_ is not None
+        and multi_eval is not None
+    ):
+        structured = model.predict_structured(x_eval)
+        horizons = model.multi_head_spec_.horizons
+        labels_by_h = {
+            h: multi_eval[f"target_{h}"].to_numpy(dtype=float) for h in horizons
+        }
+        returns_by_h = {h: multi_eval[f"ret_{h}"].to_numpy(dtype=float) for h in horizons}
+        return multi_horizon_classification_step_metrics(
+            structured,
+            labels_by_h,
+            returns_by_h,
+            long_threshold=config.risk.long_threshold,
+            short_threshold=config.risk.short_threshold,
+            primary_horizon=config.prediction.horizon,
+        )
+
     preds = np.asarray(model.predict(x_eval), dtype=float)
     if config.prediction.task == "classification":
         return classification_step_metrics(
@@ -173,11 +206,11 @@ def auto_retrain_and_promote(
     features = FeaturePipeline(config).transform(market)
     y = build_target(market, config.prediction)
     fwd = forward_return(market, horizon)
-    data = (
-        features.join(y)
-        .join(fwd)
-        .dropna(subset=["target", "forward_return"])
-    )
+    multi = build_multi_horizon_targets(market, config.prediction)
+    drop_cols = ["target", "forward_return"]
+    for h in config.prediction.horizons:
+        drop_cols.extend([f"ret_{h}", f"target_{h}"])
+    data = features.join(y).join(fwd).join(multi).dropna(subset=drop_cols)
     feature_cols = list(features.columns)
     n = len(data)
 
@@ -205,6 +238,8 @@ def auto_retrain_and_promote(
     x_eval = data[feature_cols].iloc[holdout_start:]
     labels_eval = data["target"].iloc[holdout_start:].to_numpy()
     returns_eval = data["forward_return"].iloc[holdout_start:].to_numpy()
+    multi_cols = [c for c in data.columns if c.startswith(("ret_", "target_"))]
+    multi_eval = data[multi_cols].iloc[holdout_start:] if multi_cols else None
 
     registry = ModelRegistry(config.model.model_dir)
     # Capture the incumbent BEFORE registering the challenger, so "latest" fallback does
@@ -212,8 +247,25 @@ def auto_retrain_and_promote(
     champion_label = registry.resolve_label(None)
 
     challenger = build_model(config.model, task=config.prediction.task)
-    challenger.fit(x_train, y_train, sample_weight=weights)
-    challenger_metrics = _evaluate(challenger, x_eval, labels_eval, returns_eval, config)
+    multi_train = data.loc[x_train.index, multi_cols] if multi_cols else None
+    if isinstance(challenger, EvolvedNNModel) and multi_train is not None:
+        challenger.fit(
+            x_train,
+            y_train,
+            sample_weight=weights,
+            prediction=config.prediction,
+            multi_targets=multi_train,
+        )
+    else:
+        challenger.fit(x_train, y_train, sample_weight=weights)
+    challenger_metrics = _evaluate(
+        challenger,
+        x_eval,
+        labels_eval,
+        returns_eval,
+        config,
+        multi_eval=multi_eval,
+    )
     resolved_metric = _resolve_metric(metric, challenger_metrics, config.prediction.task)
     challenger_value = float(challenger_metrics.get(resolved_metric, float("nan")))
 
@@ -239,7 +291,14 @@ def auto_retrain_and_promote(
             champ_model, _ = registry.load(
                 champion_label, config.model, task=config.prediction.task
             )
-            champion_metrics = _evaluate(champ_model, x_eval, labels_eval, returns_eval, config)
+            champion_metrics = _evaluate(
+                champ_model,
+                x_eval,
+                labels_eval,
+                returns_eval,
+                config,
+                multi_eval=multi_eval,
+            )
             champion_value = float(champion_metrics.get(resolved_metric, float("nan")))
         except Exception as exc:  # noqa: BLE001 - a broken champion must not block updates
             logger.warning("Could not score champion %s: %s", champion_label, exc)
