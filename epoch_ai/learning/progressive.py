@@ -163,10 +163,10 @@ class ProgressiveLearningEngine:
         wf = self.config.walk_forward
         horizon = self.config.prediction.horizon
         symbol = self.config.primary_symbol
-        # Purge gap: the target is a forward return over ``horizon`` bars, so the final
-        # ``embargo`` training labels would otherwise overlap (and leak) the prediction
-        # window. Dropping them keeps the train/test boundary causally clean.
-        embargo = horizon if wf.embargo is None else int(wf.embargo)
+        # Purge gap: multi-horizon targets look up to ``max_horizon`` bars ahead, so the
+        # final ``embargo`` training labels would otherwise overlap (and leak) the
+        # prediction window. Dropping them keeps the train/test boundary causally clean.
+        embargo = self.config.prediction.resolved_embargo(wf.embargo)
 
         # Align features with targets/outcomes and keep only resolved rows.
         y = build_target(market, self.config.prediction)

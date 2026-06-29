@@ -249,6 +249,10 @@ class PredictionConfig(BaseModel):
         """Flat output width for multi-head models: horizons x (quantiles + direction)."""
         return len(self.horizons) * (len(self.quantiles) + 1)
 
+    def resolved_embargo(self, embargo: int | None) -> int:
+        """Purge gap between train and predict windows (defaults to ``max_horizon``)."""
+        return self.max_horizon if embargo is None else embargo
+
 
 class EvolutionConfig(BaseModel):
     """Evolutionary architecture search for ``evolved_nn`` backend."""
@@ -657,7 +661,7 @@ class AppConfig(BaseModel):
             )
         # The purge gap (defaulting to max horizon) must leave training rows behind.
         embargo = self.walk_forward.embargo
-        resolved_embargo = max_h if embargo is None else embargo
+        resolved_embargo = self.prediction.resolved_embargo(embargo)
         if self.walk_forward.initial_train_period <= resolved_embargo:
             raise ValueError(
                 "walk_forward.initial_train_period must exceed the embargo gap "

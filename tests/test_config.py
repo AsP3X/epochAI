@@ -70,6 +70,17 @@ def test_multi_horizon_defaults():
     assert config.prediction.horizon_label(60) == "1hr"
 
 
+def test_embargo_resolves_to_max_horizon():
+    config = AppConfig.model_validate(
+        {
+            "prediction": {"horizon": 15, "horizons": [1, 5, 15, 60]},
+            "walk_forward": {"initial_train_period": 5000, "embargo": None},
+        }
+    )
+    assert config.prediction.resolved_embargo(None) == 60
+    assert config.prediction.resolved_embargo(10) == 10
+
+
 def test_single_horizon_mode_from_empty_horizons():
     config = AppConfig.model_validate({"prediction": {"horizon": 8, "horizons": []}})
     assert config.prediction.horizons == [8]

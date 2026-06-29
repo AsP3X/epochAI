@@ -167,7 +167,7 @@ def auto_retrain_and_promote(
     metric = config.promotion.metric
     horizon = config.prediction.horizon
     wf = config.walk_forward
-    embargo = horizon if wf.embargo is None else int(wf.embargo)
+    embargo = config.prediction.resolved_embargo(wf.embargo)
 
     market = HistoricalDownloader(config).load_or_download(config.primary_symbol, n_bars=n_bars)
     features = FeaturePipeline(config).transform(market)
