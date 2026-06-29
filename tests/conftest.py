@@ -26,6 +26,24 @@ def market() -> pd.DataFrame:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_walk_forward_checkpoints(tmp_path, monkeypatch):
+    """Redirect auto-named walk-forward checkpoints to a per-test temp directory.
+
+    Tests that don't set ``walk_forward.checkpoint_path`` otherwise resolve to the real
+    ``artifacts/checkpoints/`` tree and leak state across tests (and into the user's
+    workspace). Pointing the default dir at ``tmp_path`` keeps every test isolated.
+    """
+    import epoch_ai.learning.checkpoint as checkpoint_mod
+
+    monkeypatch.setattr(
+        checkpoint_mod,
+        "DEFAULT_CHECKPOINT_DIR",
+        tmp_path / "checkpoints",
+        raising=True,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _patch_offline_market_download(request, monkeypatch, market):
     """Keep unit/integration tests offline-fast; real CCXT is tested in downloader/cli."""
     module = request.node.module.__name__

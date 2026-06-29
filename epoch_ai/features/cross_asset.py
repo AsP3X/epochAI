@@ -83,9 +83,18 @@ class CrossAssetFeatures(FeatureGroup):
                     - ctx_ret.rolling(lag, min_periods=lag).sum()
                 )
 
-            out[f"xasset_{pfx}_corr_{self.corr_window}"] = btc_ret.rolling(
+            # Human: rolling corr is undefined when the context return window is flat
+            #        (zero variance, e.g. a back-filled pre-listing region). Degrade to 0
+            #        like the funding/basis z-scores so those bars survive pipeline dropna
+            #        instead of being discarded; warm-up NaNs are left intact.
+            # Agent: CAUSAL same-window stat only; MASK zero-variance corr -> 0.
+            corr = btc_ret.rolling(
                 self.corr_window, min_periods=self.corr_window // 2
             ).corr(ctx_ret)
+            ctx_ret_std = ctx_ret.rolling(
+                self.corr_window, min_periods=self.corr_window // 2
+            ).std()
+            out[f"xasset_{pfx}_corr_{self.corr_window}"] = corr.mask(ctx_ret_std.eq(0.0), 0.0)
 
             vol_col = f"{pfx}_volume"
             if vol_col in df.columns:

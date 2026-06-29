@@ -8,6 +8,7 @@ features; fitness is validation logloss on a time-ordered holdout tail.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -20,11 +21,16 @@ from epoch_ai.models.nn_genome import (
     NNGenome,
     default_genome,
     initialize_population,
+    initialize_population_from_seed,
     mutate_genome,
 )
 from epoch_ai.models.nn_trainer import (
+    build_inference_model,
+    build_training_cache,
+    evolution_max_workers,
     permutation_importance,
     predict_genome,
+    resolve_device,
     train_genome,
 )
 from epoch_ai.utils.logging import get_logger
@@ -52,6 +58,10 @@ class EvolvedNNModel(BaseModel):
         self.best_iteration_: int | None = None
         self.calibrator_: ProbabilityCalibrator | None = None
         self._importance_cache: pd.Series | None = None
+        # Cached eval network reused across predict() calls (built lazily, reset on
+        # fit/load). Avoids rebuilding + reloading weights every bar in run/live mode.
+        self._infer_model: object | None = None
+        self._infer_device: object | None = None
 
     def fit(
         self,
@@ -59,6 +69,10 @@ class EvolvedNNModel(BaseModel):
         y: pd.Series,
         sample_weight: np.ndarray | None = None,
         val_fraction: float | None = None,
+        *,
+        compute_importance: bool | None = None,
+        seed_genome: NNGenome | None = None,
+        seed_state: dict[str, object] | None = None,
     ) -> EvolvedNNModel:
         """Evolve architecture genes, train the best candidate, optionally calibrate."""
         if len(x) != len(y):
@@ -66,6 +80,8 @@ class EvolvedNNModel(BaseModel):
         self.feature_names_ = list(x.columns)
         self.calibrator_ = None
         self._importance_cache = None
+        self._infer_model = None
+        self._infer_device = None
 
         if val_fraction is None:
             val_fraction = self.config.val_fraction
@@ -79,8 +95,52 @@ class EvolvedNNModel(BaseModel):
         nn_cfg = self.config.nn
         rng = np.random.default_rng(evolution.seed)
 
+        run_importance = (
+            self.config.nn.compute_importance
+            if compute_importance is None
+            else compute_importance
+        )
+
+        cache = build_training_cache(
+            x_arr,
+            y_arr,
+            self.config,
+            task=self.task,
+            sample_weight=sample_weight,
+            val_fraction=val_fraction,
+            split=split,
+        )
+
+        def _initial_state(genome: NNGenome) -> dict[str, object] | None:
+            if seed_genome is None or seed_state is None:
+                return None
+            if genome.hidden_sizes != seed_genome.hidden_sizes:
+                return None
+            if (
+                genome.dropout != seed_genome.dropout
+                or genome.use_batch_norm != seed_genome.use_batch_norm
+            ):
+                return None
+            return seed_state
+
+        def _train_candidate(genome: NNGenome):
+            result = train_genome(
+                x_arr,
+                y_arr,
+                genome,
+                self.config,
+                task=self.task,
+                sample_weight=sample_weight,
+                val_fraction=val_fraction,
+                split=split,
+                refit_full=False,
+                cache=cache,
+                initial_state=_initial_state(genome),
+            )
+            return result.val_loss, genome, result
+
         if evolution.fast_fit or not evolution.enabled:
-            best_genome = default_genome(nn_cfg)
+            best_genome = seed_genome if seed_genome is not None else default_genome(nn_cfg)
             trained = train_genome(
                 x_arr,
                 y_arr,
@@ -91,6 +151,8 @@ class EvolvedNNModel(BaseModel):
                 val_fraction=val_fraction,
                 split=split,
                 refit_full=self.config.refit_full_after_es,
+                cache=cache,
+                initial_state=seed_state if seed_genome is not None else None,
             )
             logger.info(
                 "evolved_nn fast_fit genome=%s val_loss=%.5f",
@@ -98,26 +160,33 @@ class EvolvedNNModel(BaseModel):
                 trained.val_loss,
             )
         else:
-            population = initialize_population(rng, nn_cfg, evolution)
+            if seed_genome is not None:
+                population = initialize_population_from_seed(
+                    rng,
+                    nn_cfg,
+                    evolution,
+                    seed_genome,
+                )
+            else:
+                population = initialize_population(rng, nn_cfg, evolution)
             winning_genome: NNGenome | None = None
             best_fitness = float("inf")
             best_trained = None
+            stale_generations = 0
+
+            max_workers = evolution_max_workers(self.config, evolution.population_size)
+            use_parallel = (
+                evolution.parallel_candidates
+                and max_workers > 1
+                and len(population) > 1
+            )
 
             for generation in range(evolution.generations):
-                scores: list[tuple[float, NNGenome, object]] = []
-                for genome in population:
-                    result = train_genome(
-                        x_arr,
-                        y_arr,
-                        genome,
-                        self.config,
-                        task=self.task,
-                        sample_weight=sample_weight,
-                        val_fraction=val_fraction,
-                        split=split,
-                        refit_full=False,
-                    )
-                    scores.append((result.val_loss, genome, result))
+                if use_parallel:
+                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                        scores = list(pool.map(_train_candidate, population))
+                else:
+                    scores = [_train_candidate(genome) for genome in population]
 
                 scores.sort(key=lambda item: item[0])
                 gen_best_loss, gen_best_genome, gen_best_result = scores[0]
@@ -131,6 +200,21 @@ class EvolvedNNModel(BaseModel):
                     best_fitness = gen_best_loss
                     winning_genome = gen_best_genome
                     best_trained = gen_best_result
+                    stale_generations = 0
+                else:
+                    stale_generations += 1
+
+                # Human: bail out of evolution once it stops finding better architectures.
+                # Agent: CONFIG evolution.early_stop_patience; null = run all generations.
+                if (
+                    evolution.early_stop_patience is not None
+                    and stale_generations >= evolution.early_stop_patience
+                ):
+                    logger.info(
+                        "evolved_nn early stop: %d generations without improvement.",
+                        stale_generations,
+                    )
+                    break
 
                 elite_n = max(1, int(evolution.population_size * evolution.elite_fraction))
                 elites = [g for _, g, _ in scores[:elite_n]]
@@ -159,6 +243,8 @@ class EvolvedNNModel(BaseModel):
                 val_fraction=val_fraction,
                 split=split,
                 refit_full=self.config.refit_full_after_es,
+                cache=cache,
+                initial_state=_initial_state(best_genome),
             )
             if best_trained.val_loss < trained.val_loss:
                 trained = best_trained
@@ -183,7 +269,7 @@ class EvolvedNNModel(BaseModel):
                 self.config.calibration,
             )
 
-        if has_val and self.task == "classification":
+        if run_importance and has_val and self.task == "classification":
             imp = permutation_importance(
                 x_arr[split:],
                 y_arr[split:],
@@ -194,12 +280,31 @@ class EvolvedNNModel(BaseModel):
                 task=self.task,
                 feature_names=self.feature_names_,
                 rng=rng,
+                model=self._inference_model(),
             )
             self._importance_cache = pd.Series(imp, name="permutation").sort_values(
                 ascending=False
             )
 
         return self
+
+    def _inference_model(self):
+        """Lazily build and cache the eval network for the current device + weights."""
+        if self.genome_ is None or self.state_dict_ is None:
+            raise RuntimeError("Model is not trained.")
+        device = resolve_device(self.config)
+        if self._infer_model is None or self._infer_device != device:
+            input_dim = len(self.feature_names_ or [])
+            self._infer_model = build_inference_model(
+                input_dim,
+                self.genome_,
+                self.state_dict_,
+                self.config,
+                task=self.task,
+                device=device,
+            )
+            self._infer_device = device
+        return self._infer_model
 
     def predict(self, x: pd.DataFrame) -> np.ndarray:
         """Return calibrated probabilities (classification) or raw regression outputs."""
@@ -214,6 +319,7 @@ class EvolvedNNModel(BaseModel):
             self.scaler_,
             self.config,
             task=self.task,
+            model=self._inference_model(),
         )
         if self.calibrator_ is not None:
             return self.calibrator_.transform(raw)

@@ -1,12 +1,14 @@
-"""Tests for the Fear & Greed data source and its causal join in the downloader."""
+"""Tests for the Fear & Greed data source and its causal join in enrichment."""
 
 from __future__ import annotations
 
 import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
+from epoch_ai.data import enrichment as enrich_mod
 from epoch_ai.data import fear_greed as fng_mod
 from epoch_ai.data.downloader import HistoricalDownloader
+from epoch_ai.data.enrichment import enrich_primary_market
 
 
 def _sample_payload() -> dict:
@@ -43,12 +45,7 @@ def test_fetch_fear_greed_handles_network_error(monkeypatch):
     assert fng_mod.fetch_fear_greed() is None
 
 
-def test_attach_fear_greed_is_causal_forward_fill(tmp_path, monkeypatch):
-    config = AppConfig.model_validate(
-        {"data": {"data_dir": str(tmp_path / "data"), "include_fear_greed": True}}
-    )
-    downloader = HistoricalDownloader(config)
-
+def test_join_fear_greed_is_causal_forward_fill(tmp_path, monkeypatch):
     # 15m bars spanning the sample daily readings.
     index = pd.date_range("2020-01-01", periods=400, freq="15min", tz="UTC")
     df = pd.DataFrame({"close": range(len(index))}, index=index, dtype=float)
@@ -60,11 +57,10 @@ def test_attach_fear_greed_is_causal_forward_fill(tmp_path, monkeypatch):
         ),
         name="fear_greed",
     )
-    monkeypatch.setattr(
-        "epoch_ai.data.fear_greed.fetch_fear_greed", lambda *a, **k: daily
-    )
+    # _join_fear_greed pulls the daily series via _load_fear_greed_series(cache).
+    monkeypatch.setattr(enrich_mod, "_load_fear_greed_series", lambda cache: daily)
 
-    out = downloader._attach_fear_greed(df)
+    out = enrich_mod._join_fear_greed(df, tmp_path)
     assert "fear_greed" in out.columns
     # First reading covers Jan 1; the value never reflects a *future* day's reading.
     assert out.loc["2020-01-01 00:00", "fear_greed"] == 55.0
@@ -76,46 +72,39 @@ def test_attach_fear_greed_is_causal_forward_fill(tmp_path, monkeypatch):
     pd.testing.assert_series_equal(out["fear_greed"], expected, check_names=False)
 
 
-def test_attach_fear_greed_graceful_when_unavailable(tmp_path, monkeypatch):
-    config = AppConfig.model_validate(
-        {"data": {"data_dir": str(tmp_path / "data"), "include_fear_greed": True}}
-    )
-    downloader = HistoricalDownloader(config)
+def test_join_fear_greed_graceful_when_unavailable(tmp_path, monkeypatch):
     index = pd.date_range("2020-01-01", periods=50, freq="15min", tz="UTC")
     df = pd.DataFrame({"close": range(len(index))}, index=index, dtype=float)
 
-    monkeypatch.setattr(
-        "epoch_ai.data.fear_greed.fetch_fear_greed", lambda *a, **k: None
-    )
-    out = downloader._attach_fear_greed(df)
+    monkeypatch.setattr(enrich_mod, "_load_fear_greed_series", lambda cache: None)
+    out = enrich_mod._join_fear_greed(df, tmp_path)
     assert "fear_greed" not in out.columns  # no column, pipeline still works
 
 
-def test_download_joins_fear_greed_end_to_end(tmp_path, monkeypatch):
-    """A full offline download with the toggle on yields a usable sentiment column."""
+def test_enrich_joins_fear_greed_end_to_end(tmp_path, monkeypatch):
+    """Enrichment with the toggle on yields a usable, causal sentiment column."""
     config = AppConfig.model_validate(
         {
             "data": {
                 "data_dir": str(tmp_path / "data"),
-                "use_synthetic_fallback": True,
-                "include_fear_greed": True,
+                "context_symbols": [],
+                "fetch_fear_greed": True,
+                "fetch_spot_basis": False,
             }
         }
     )
-    monkeypatch.setattr(
-        HistoricalDownloader, "_download_ccxt", lambda *a, **k: None
-    )
-    # Daily readings spanning the synthetic range (starts 2017-01-01 in earliest mode).
+    index = pd.date_range("2020-01-01", periods=300, freq="15min", tz="UTC")
+    btc = pd.DataFrame({"close": range(len(index))}, index=index, dtype=float)
+
     daily = pd.Series(
         [40.0, 60.0],
-        index=pd.to_datetime(["2016-12-01", "2017-02-01"], utc=True),
+        index=pd.to_datetime(["2020-01-01", "2020-01-02"], utc=True),
         name="fear_greed",
     )
-    monkeypatch.setattr(
-        "epoch_ai.data.fear_greed.fetch_fear_greed", lambda *a, **k: daily
-    )
+    monkeypatch.setattr(enrich_mod, "_load_fear_greed_series", lambda cache: daily)
 
-    df = HistoricalDownloader(config).load_or_download(n_bars=500)
-    assert "fear_greed" in df.columns
-    assert df["fear_greed"].notna().all()  # ffill+bfill leaves no gaps on the grid
-    assert df["fear_greed"].nunique() >= 1
+    downloader = HistoricalDownloader(config)
+    enriched = enrich_primary_market(btc, config, downloader)
+    assert "fear_greed" in enriched.columns
+    assert enriched["fear_greed"].notna().all()  # readings start at the first bar
+    assert set(enriched["fear_greed"].unique()) == {40.0, 60.0}

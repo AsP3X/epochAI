@@ -90,8 +90,11 @@ def test_refit_full_after_es_uses_all_rows(market, small_config):
 
 
 def test_device_params_builder(small_config):
-    """The device param builder is a no-op on CPU and wires ids on GPU."""
+    """The device param builder is a no-op on CPU/auto and wires ids on GPU."""
     small_config.model.device = "cpu"
+    assert LightGBMModel(small_config.model)._device_params() == {}
+
+    small_config.model.device = "auto"
     assert LightGBMModel(small_config.model)._device_params() == {}
 
     small_config.model.device = "gpu"

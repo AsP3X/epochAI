@@ -57,6 +57,17 @@ class XGBoostModel(BaseModel):
         """
         if self.config.device == "cpu":
             return "cpu"
+        if self.config.device == "auto":
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    if self.config.gpu_device_id >= 0:
+                        return f"cuda:{self.config.gpu_device_id}"
+                    return "cuda"
+            except ImportError:
+                pass
+            return "cpu"
         if self.config.gpu_device_id >= 0:
             return f"cuda:{self.config.gpu_device_id}"
         return "cuda"

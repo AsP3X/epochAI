@@ -206,6 +206,25 @@ class EvolutionConfig(BaseModel):
         default=False,
         description="Skip evolution and train a fixed default MLP (tests / quick smokes).",
     )
+    parallel_candidates: bool = Field(
+        default=True,
+        description="Train population candidates concurrently (thread pool per device).",
+    )
+    max_workers: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Max parallel candidate trainers (null = auto: ~4 on CUDA, else CPU count)."
+        ),
+    )
+    early_stop_patience: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Stop evolution early after this many generations without best-fitness "
+            "improvement (null = run all generations)."
+        ),
+    )
 
 
 class NNConfig(BaseModel):
@@ -217,6 +236,21 @@ class NNConfig(BaseModel):
     max_epochs: int = Field(default=200, ge=10)
     batch_size: int = Field(default=256, ge=16)
     patience: int = Field(default=15, ge=1, description="Early-stopping patience on val loss.")
+    compute_importance: bool = Field(
+        default=True,
+        description=(
+            "When true, permutation importance runs on the final walk-forward fit only "
+            "(skipped on intermediate retrains for speed)."
+        ),
+    )
+    mixed_precision: bool = Field(
+        default=True,
+        description="Use torch.autocast on CUDA during candidate training.",
+    )
+    torch_compile: bool = Field(
+        default=True,
+        description="Wrap MLP candidates with torch.compile when PyTorch 2+ is available.",
+    )
 
 
 class ModelConfig(BaseModel):
@@ -236,7 +270,7 @@ class ModelConfig(BaseModel):
             ``"lightgbm"``, or ``"xgboost"`` (optional GBM backends).
         evolution: Evolutionary search knobs (``evolved_nn`` only).
         nn: MLP training limits (``evolved_nn`` only).
-        device: ``"cpu"`` (default), ``"gpu"`` or ``"cuda"`` for PyTorch/XGBoost.
+        device: ``"auto"`` (default, CUDA when available), ``"cpu"``, ``"gpu"`` or ``"cuda"``.
         gpu_platform_id: OpenCL platform id for LightGBM ``device="gpu"`` (``-1`` = auto).
         gpu_device_id: OpenCL/CUDA device ordinal (``-1`` = auto).
         retain_versions: When set, prune oldest ``v_*`` directories after each
@@ -266,9 +300,9 @@ class ModelConfig(BaseModel):
         default=True,
         description="Refit on the full training window for the ES-selected rounds.",
     )
-    device: Literal["cpu", "gpu", "cuda"] = Field(
-        default="cpu",
-        description="Compute device; gpu/cuda fall back to cpu when unavailable.",
+    device: Literal["auto", "cpu", "gpu", "cuda"] = Field(
+        default="auto",
+        description="Compute device; auto picks CUDA when available; gpu/cuda fall back to cpu.",
     )
     gpu_platform_id: int = Field(
         default=-1,
@@ -558,6 +592,11 @@ class AppConfig(BaseModel):
                 "walk_forward.initial_train_period must exceed the embargo gap "
                 f"({resolved_embargo}); otherwise the first training window is empty."
             )
+        # Human: evolved_nn retrains are costly; default walk-forward cadence is slower
+        #        than LightGBM unless the user explicitly configured walk_forward.
+        # Agent: MUTATES retrain_frequency=5; ONLY when walk_forward not in fields_set.
+        if self.model.backend == "evolved_nn" and "walk_forward" not in self.model_fields_set:
+            self.walk_forward.retrain_frequency = 5
         return self
 
 

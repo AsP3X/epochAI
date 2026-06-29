@@ -13,6 +13,11 @@ from epoch_ai.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Human: Base directory for auto-named checkpoints. Patched in tests for isolation so
+#        runs never leak a checkpoint into the real artifacts/ tree.
+# Agent: read at call time by resolve_checkpoint_path; CONFIG walk_forward.checkpoint_path overrides.
+DEFAULT_CHECKPOINT_DIR = Path("artifacts/checkpoints")
+
 
 @dataclass(slots=True)
 class WalkForwardCheckpoint:
@@ -34,7 +39,7 @@ def resolve_checkpoint_path(config: AppConfig) -> Path:
     if wf.checkpoint_path:
         return Path(wf.checkpoint_path)
     safe_symbol = config.primary_symbol.replace("/", "-")
-    return Path(f"artifacts/checkpoints/walk_forward_{safe_symbol}.json")
+    return DEFAULT_CHECKPOINT_DIR / f"walk_forward_{safe_symbol}.json"
 
 
 def checkpoint_fingerprint(config: AppConfig, n_features: int) -> str:

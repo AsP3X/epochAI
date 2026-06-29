@@ -82,6 +82,9 @@ model:
     mutation_sigma: 0.2
     seed: 42
     fast_fit: false             # true for quick tests / smokes (skips evolution)
+    parallel_candidates: true     # train population concurrently
+    max_workers: null             # null = auto (~4 on CUDA, else CPU count)
+    early_stop_patience: null     # stop after N generations w/o improvement (null = off)
   nn:
     max_layers: 3
     hidden_size_min: 32
@@ -89,13 +92,16 @@ model:
     max_epochs: 200
     batch_size: 256
     patience: 15
+    compute_importance: true       # permutation importance on final walk-forward fit only
+    mixed_precision: true          # torch.autocast on CUDA
+    torch_compile: true            # torch.compile candidates when PyTorch 2+
   num_boost_round: 300
   early_stopping_rounds: 30
   val_fraction: 0.15          # time-ordered tail for early stopping + calibration
   class_weight: balanced      # derive scale_pos_weight from label balance ("none" to disable)
   calibration: sigmoid       # post-hoc probability calibration: isotonic | sigmoid | none
   refit_full_after_es: true   # after ES picks #rounds, refit on full window (keep freshest bars)
-  device: cpu                 # cpu | gpu | cuda — LightGBM gpu=OpenCL, XGBoost gpu/cuda=CUDA; auto-falls back to cpu
+  device: auto                # auto | cpu | gpu | cuda — auto picks CUDA when available
   gpu_platform_id: -1         # OpenCL platform id for LightGBM device=gpu (-1 = auto)
   gpu_device_id: -1           # OpenCL/CUDA device ordinal (-1 = auto; pin a GPU on multi-GPU hosts)
   retain_versions: 10         # auto-delete older v_* dirs during train (null = keep all)
@@ -120,7 +126,7 @@ model:
 walk_forward:
   initial_train_period: 2000   # candles used for the first fit (oldest data)
   step_size: 200               # candles predicted + ingested per iteration
-  retrain_frequency: 1         # retrain every N steps (1 = every step)
+  retrain_frequency: 5         # evolved_nn: 5 balances cost; use 1 to retrain every step
   expanding: true              # expanding window = full accumulated history
   recency_half_life: 2000      # decay sample weights so recent regimes matter more
   embargo: null                # purge gap between train/test (null = prediction.horizon; 0 = off)

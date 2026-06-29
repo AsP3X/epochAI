@@ -83,10 +83,105 @@ def test_calibration_persisted(market, small_config, tmp_path):
 def test_feature_importance_non_empty(market, small_config):
     cfg = _evolved_config(small_config)
     x, y = _xy(market, cfg)
-    model = EvolvedNNModel(cfg.model).fit(x.iloc[:2000], y.iloc[:2000])
+    model = EvolvedNNModel(cfg.model).fit(
+        x.iloc[:2000],
+        y.iloc[:2000],
+        compute_importance=True,
+    )
     importance = model.feature_importance()
     assert len(importance) == x.shape[1]
     assert importance.sum() >= 0.0
+
+
+def test_importance_skipped_by_default(market, small_config):
+    cfg = _evolved_config(small_config)
+    cfg.model.nn.compute_importance = False
+    x, y = _xy(market, cfg)
+    model = EvolvedNNModel(cfg.model).fit(x.iloc[:2000], y.iloc[:2000])
+    assert model.feature_importance().sum() == 0.0
+
+
+def test_resolve_device_auto_defaults_cpu(small_config):
+    from epoch_ai.models.nn_trainer import resolve_device
+
+    small_config.model.device = "auto"
+    device = resolve_device(small_config.model)
+    assert device.type in ("cpu", "cuda")
+
+
+def test_parallel_evolution_completes(market, small_config):
+    cfg = _evolved_config(small_config)
+    cfg.model.evolution.fast_fit = False
+    cfg.model.evolution.parallel_candidates = True
+    cfg.model.evolution.population_size = 4
+    cfg.model.evolution.generations = 1
+    cfg.model.evolution.max_workers = 2
+    cfg.model.nn.max_epochs = 8
+    cfg.model.nn.patience = 2
+    x, y = _xy(market, cfg)
+    model = EvolvedNNModel(cfg.model).fit(x.iloc[:1200], y.iloc[:1200])
+    assert model.genome_ is not None
+
+
+def test_state_dict_keys_have_no_compile_prefix(market, small_config):
+    """torch.compile wraps modules in _orig_mod; saved weights must stay prefix-free."""
+    cfg = _evolved_config(small_config)
+    cfg.model.nn.torch_compile = True
+    x, y = _xy(market, cfg)
+    model = EvolvedNNModel(cfg.model).fit(x.iloc[:1200], y.iloc[:1200])
+    assert model.state_dict_ is not None
+    assert all(not k.startswith("_orig_mod.") for k in model.state_dict_)
+    # Predict path rebuilds an uncompiled module and must load these keys cleanly.
+    preds = model.predict(x.iloc[1200:1260])
+    assert ((preds >= 0) & (preds <= 1)).all()
+
+
+def test_inference_model_cached_across_predicts(market, small_config):
+    """predict() reuses one eval network instead of rebuilding every call."""
+    cfg = _evolved_config(small_config)
+    x, y = _xy(market, cfg)
+    model = EvolvedNNModel(cfg.model).fit(x.iloc[:1500], y.iloc[:1500])
+    first = model.predict(x.iloc[1500:1520])
+    cached = model._infer_model
+    assert cached is not None
+    second = model.predict(x.iloc[1520:1540])
+    assert model._infer_model is cached  # same object reused
+    assert first.shape[0] == 20 and second.shape[0] == 20
+
+
+def test_evolution_early_stop_patience(market, small_config):
+    """Evolution halts once no improvement for the configured patience."""
+    cfg = _evolved_config(small_config)
+    cfg.model.evolution.fast_fit = False
+    cfg.model.evolution.population_size = 4
+    cfg.model.evolution.generations = 20
+    cfg.model.evolution.early_stop_patience = 1
+    cfg.model.nn.max_epochs = 10
+    cfg.model.nn.patience = 2
+    x, y = _xy(market, cfg)
+    model = EvolvedNNModel(cfg.model).fit(x.iloc[:1200], y.iloc[:1200])
+    assert model.genome_ is not None
+
+
+def test_warm_start_from_seed_genome(market, small_config):
+    from epoch_ai.models.nn_genome import default_genome
+
+    cfg = _evolved_config(small_config)
+    x, y = _xy(market, cfg)
+    seed = default_genome(cfg.model.nn)
+    first = EvolvedNNModel(cfg.model).fit(
+        x.iloc[:1000],
+        y.iloc[:1000],
+        seed_genome=seed,
+    )
+    second = EvolvedNNModel(cfg.model).fit(
+        x.iloc[:1200],
+        y.iloc[:1200],
+        seed_genome=first.genome_,
+        seed_state=first.state_dict_,
+    )
+    assert second.genome_ is not None
+    assert second.state_dict_ is not None
 
 
 def test_evolution_runs_without_fast_fit(market, small_config):
@@ -141,6 +236,19 @@ def test_train_genome_tolerates_trailing_singleton_batch():
     )
     assert result.best_epoch >= 1
     assert result.state_dict
+
+
+def test_initialize_population_from_seed():
+    from epoch_ai.config.settings import EvolutionConfig, NNConfig
+    from epoch_ai.models.nn_genome import default_genome, initialize_population_from_seed
+
+    rng = np.random.default_rng(0)
+    nn = NNConfig()
+    evolution = EvolutionConfig(population_size=6)
+    seed = default_genome(nn)
+    pop = initialize_population_from_seed(rng, nn, evolution, seed)
+    assert len(pop) == 6
+    assert pop[0] == seed
 
 
 def test_model_class_lazy_import():

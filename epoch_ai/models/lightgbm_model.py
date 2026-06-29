@@ -45,7 +45,7 @@ class LightGBMModel(BaseModel):
     def _device_params(self) -> dict[str, object]:
         """LightGBM device params; empty for CPU so existing behaviour is unchanged."""
         device = self.config.device
-        if device == "cpu":
+        if device in ("cpu", "auto"):
             return {}
         params: dict[str, object] = {"device_type": device}
         # Platform/device ids only apply to the OpenCL ("gpu") backend; CUDA ignores

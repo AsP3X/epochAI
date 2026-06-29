@@ -77,7 +77,12 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
   `factory.build_model` (chosen by `model.backend`): **evolved_nn** (default, evolutionary
   PyTorch MLP in `model.pt` + genome/scaler sidecars), **LightGBM** (`model.txt`), and
   optional **XGBoost** (`model.json`, lazy-imported; real CUDA-GPU training on NVIDIA
-  cards via `model.device=cuda`). Both GBM backends share balanced class weighting +
+  cards via `model.device=auto` or `cuda`). **evolved_nn** parallelizes evolution
+  candidates (`model.evolution.parallel_candidates`), caches device tensors across
+  genomes, warm-starts retrains from the prior champion genome, gates permutation
+  importance to the final walk-forward fit (`model.nn.compute_importance`), and uses
+  mixed precision + optional `torch.compile` on CUDA. Default walk-forward
+  `retrain_frequency` is **5** for evolved_nn (1 for GBM backends). Both GBM backends share balanced class weighting +
   post-hoc probability calibration (`calibration.py`); the calibration sidecar travels
   with the bundle. GPU requests auto-fall back to CPU when the build/host can't satisfy
   them. The registry is backend-aware (metadata stores `backend`/`model_file`) and also

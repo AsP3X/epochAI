@@ -142,3 +142,23 @@ def initialize_population(
     while len(pop) < evolution.population_size:
         pop.append(random_genome(rng, nn))
     return pop
+
+
+def initialize_population_from_seed(
+    rng: np.random.Generator,
+    nn: NNConfig,
+    evolution: EvolutionConfig,
+    seed: NNGenome,
+) -> list[NNGenome]:
+    """Warm-start evolution from a champion genome (elite + mutated offspring)."""
+    pop = [seed]
+    while len(pop) < evolution.population_size:
+        pop.append(
+            mutate_genome(
+                seed,
+                rng,
+                nn,
+                sigma=evolution.mutation_sigma,
+            )
+        )
+    return pop

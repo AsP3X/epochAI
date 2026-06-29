@@ -84,7 +84,7 @@ def test_embargo_cannot_exceed_initial_train():
 
 def test_model_device_defaults():
     model = AppConfig().model
-    assert model.device == "cpu"
+    assert model.device == "auto"
     assert model.gpu_platform_id == -1
     assert model.gpu_device_id == -1
 
@@ -97,6 +97,7 @@ def test_invalid_device_rejected():
 def test_model_backend_default_is_evolved_nn():
     assert AppConfig().model.backend == "evolved_nn"
     assert AppConfig().model.evolution.enabled is True
+    assert AppConfig().model.device == "auto"
 
 
 def test_evolution_config_defaults():
@@ -104,6 +105,24 @@ def test_evolution_config_defaults():
     assert evo.population_size >= 2
     assert evo.generations >= 1
     assert evo.fast_fit is False
+    assert evo.parallel_candidates is True
+    assert evo.early_stop_patience is None
+
+
+def test_evolved_nn_default_retrain_frequency():
+    assert AppConfig().walk_forward.retrain_frequency == 5
+
+
+def test_lightgbm_default_retrain_frequency():
+    config = AppConfig.model_validate({"model": {"backend": "lightgbm"}})
+    assert config.walk_forward.retrain_frequency == 1
+
+
+def test_nn_performance_defaults():
+    nn = AppConfig().model.nn
+    assert nn.compute_importance is True
+    assert nn.mixed_precision is True
+    assert nn.torch_compile is True
 
 
 def test_invalid_backend_rejected():

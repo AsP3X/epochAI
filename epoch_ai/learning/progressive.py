@@ -42,7 +42,9 @@ from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
 from epoch_ai.models.base import BaseModel
+from epoch_ai.models.evolved_nn_model import EvolvedNNModel
 from epoch_ai.models.factory import build_model
+from epoch_ai.models.nn_genome import NNGenome
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.utils.logging import get_logger
 
@@ -263,8 +265,32 @@ class ProgressiveLearningEngine:
                 x_train = x_all.iloc[train_start:train_end]
                 y_train = y_all.iloc[train_start:train_end]
                 weights = self._sample_weights(len(x_train))
+                # Human: warm-start evolved_nn from the prior champion genome/weights.
+                # Agent: READS model.genome_/state_dict_; only for EvolvedNNModel retrain.
+                seed_genome: NNGenome | None = None
+                seed_state: dict[str, object] | None = None
+                if isinstance(model, EvolvedNNModel) and model.genome_ is not None:
+                    seed_genome = model.genome_
+                    seed_state = model.state_dict_
+                test_end = min(cutoff + wf.step_size, n)
+                is_final_retrain = test_end >= n or (
+                    wf.max_steps is not None and step_idx + 1 >= wf.max_steps
+                )
+                compute_importance = (
+                    self.config.model.nn.compute_importance and is_final_retrain
+                )
                 model = build_model(self.config.model, task=self.config.prediction.task)
-                model.fit(x_train, y_train, sample_weight=weights)
+                if isinstance(model, EvolvedNNModel):
+                    model.fit(
+                        x_train,
+                        y_train,
+                        sample_weight=weights,
+                        compute_importance=compute_importance,
+                        seed_genome=seed_genome,
+                        seed_state=seed_state,
+                    )
+                else:
+                    model.fit(x_train, y_train, sample_weight=weights)
                 if self.registry is not None:
                     protect_labels: set[str] = set()
                     if wf.checkpoint_enabled:
