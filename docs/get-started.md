@@ -289,6 +289,17 @@ python -m epoch_ai train --bars 16000 --log-predictions `
   --set model.backend=xgboost --set model.device=cuda
 ```
 
+**`evolved_nn` + `model.nn.torch_compile=true` on Linux** (RunPod, etc.): Triton JIT needs
+Python dev headers. If training crashes with `Python.h: No such file or directory`, either
+install headers (`apt install python3.12-dev` or `python3-dev`) or disable compile:
+
+```powershell
+--set model.nn.torch_compile=false
+```
+
+Evolution candidates train without compile; compile runs on the main-thread refit after
+evolution — that is where missing headers typically surface.
+
 ### Tune MLP depth (`evolved_nn`)
 
 Default search uses 1–3 hidden layers and widths 32–512. To test deeper networks,

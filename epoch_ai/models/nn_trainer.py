@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sysconfig
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -213,7 +214,20 @@ def _triton_available() -> bool:
         return False
 
 
-def _maybe_compile(model, config: ModelConfig, device):
+def _python_dev_headers_available() -> bool:
+    """Return whether Python.h is present (required by Triton JIT on Linux)."""
+    include = sysconfig.get_path("include")
+    if not include:
+        return False
+    return os.path.isfile(os.path.join(include, "Python.h"))
+
+
+def _triton_compile_ready() -> bool:
+    """Triton plus Python dev headers are required for torch.compile on CUDA."""
+    return _triton_available() and _python_dev_headers_available()
+
+
+def _maybe_compile(model, config: ModelConfig, device, *, warmup_batch=None):
     """Apply ``torch.compile`` on CUDA when configured and supported.
 
     Restricted to CUDA on the **main thread** only: parallel evolution trains candidates
@@ -224,12 +238,20 @@ def _maybe_compile(model, config: ModelConfig, device):
         return model
     if threading.current_thread() is not threading.main_thread():
         return model
+    global _COMPILE_SKIP_LOGGED
     if not _triton_available():
-        global _COMPILE_SKIP_LOGGED
         if not _COMPILE_SKIP_LOGGED:
             logger.info(
                 "torch.compile disabled for evolved_nn: Triton is not installed "
                 "(common on Windows CUDA builds)."
+            )
+            _COMPILE_SKIP_LOGGED = True
+        return model
+    if not _python_dev_headers_available():
+        if not _COMPILE_SKIP_LOGGED:
+            logger.info(
+                "torch.compile disabled for evolved_nn: Python.h not found (install "
+                "python3-dev / python3.12-dev on Linux, or set model.nn.torch_compile=false)."
             )
             _COMPILE_SKIP_LOGGED = True
         return model
@@ -238,9 +260,22 @@ def _maybe_compile(model, config: ModelConfig, device):
     if compile_fn is None:
         return model
     try:
-        return compile_fn(model)
+        compiled = compile_fn(model)
+        # Human: compile() is lazy; one tiny forward pass surfaces Triton JIT errors early.
+        # Agent: CALLS warmup_batch slice; RETURNS uncompiled model on dynamo/triton failure.
+        if warmup_batch is not None and len(warmup_batch) > 0:
+            use_amp = bool(config.nn.mixed_precision)
+            with torch.inference_mode():
+                with torch.autocast(device_type="cuda", enabled=use_amp):
+                    compiled(warmup_batch[: min(2, len(warmup_batch))])
+        return compiled
     except Exception as exc:  # pragma: no cover - backend-specific compile failures
-        logger.debug("torch.compile skipped for evolved_nn candidate: %s", exc)
+        if not _COMPILE_SKIP_LOGGED:
+            logger.info(
+                "torch.compile disabled for evolved_nn after compile failure: %s",
+                exc,
+            )
+            _COMPILE_SKIP_LOGGED = True
         return model
 
 
@@ -428,7 +463,7 @@ def train_genome(
                 base_model.load_state_dict(initial_state)  # type: ignore[arg-type]
             except RuntimeError:
                 pass
-        model = _maybe_compile(base_model, config, device)
+        model = _maybe_compile(base_model, config, device, warmup_batch=x_train_t)
         optimizer = torch.optim.Adam(
             base_model.parameters(),
             lr=genome.learning_rate,
@@ -543,15 +578,15 @@ def train_genome(
                     base_model.load_state_dict(best_state)  # type: ignore[arg-type]
                 except RuntimeError:
                     pass
-            model = _maybe_compile(base_model, config, device)
+            x_full_t = torch.from_numpy(x_full).float().to(device)
+            y_full_t = torch.from_numpy(y_full).float().to(device)
+            w_full_t = None if w_full is None else torch.from_numpy(w_full).float().to(device)
+            model = _maybe_compile(base_model, config, device, warmup_batch=x_full_t)
             optimizer = torch.optim.Adam(
                 base_model.parameters(),
                 lr=genome.learning_rate,
                 weight_decay=genome.weight_decay,
             )
-            x_full_t = torch.from_numpy(x_full).float().to(device)
-            y_full_t = torch.from_numpy(y_full).float().to(device)
-            w_full_t = None if w_full is None else torch.from_numpy(w_full).float().to(device)
             full_batch = effective_training_batch_size(nn_cfg, len(x_full_t), device)
             for _ in range(best_epoch):
                 model.train()

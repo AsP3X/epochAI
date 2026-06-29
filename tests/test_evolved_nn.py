@@ -163,6 +163,21 @@ def test_parallel_evolution_completes(market, small_config):
     assert model.genome_ is not None
 
 
+def test_maybe_compile_skips_without_python_headers(small_config):
+    from unittest.mock import patch
+
+    from epoch_ai.models.nn_genome import default_genome
+    from epoch_ai.models.nn_trainer import _maybe_compile, build_mlp, resolve_device
+
+    cfg = _evolved_config(small_config)
+    cfg.model.nn.torch_compile = True
+    device = resolve_device(cfg.model)
+    genome = default_genome(cfg.model.nn)
+    base = build_mlp(8, genome, task="classification").to(device)
+    with patch("epoch_ai.models.nn_trainer._python_dev_headers_available", return_value=False):
+        assert _maybe_compile(base, cfg.model, device) is base
+
+
 def test_maybe_compile_skips_worker_threads(small_config):
     """Parallel evolution must not torch.compile inside thread-pool workers."""
     from concurrent.futures import ThreadPoolExecutor
