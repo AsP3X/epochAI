@@ -157,6 +157,16 @@ def test_evolution_config_defaults():
     assert evo.cuda_auto_workers is True
     assert evo.cuda_worker_cap_max == 12
     assert len(evo.cuda_worker_caps) == len(evo.cuda_worker_vram_gb) + 1
+    assert evo.successive_halving is False
+    assert 0.0 < evo.sh_proxy_epoch_fraction <= 1.0
+    assert 0.0 < evo.sh_promote_fraction <= 1.0
+
+
+def test_successive_halving_fraction_bounds_rejected():
+    with pytest.raises(ValueError):
+        EvolutionConfig.model_validate({"sh_proxy_epoch_fraction": 0.0})
+    with pytest.raises(ValueError):
+        EvolutionConfig.model_validate({"sh_promote_fraction": 1.5})
 
 
 def test_evolution_cuda_worker_tiers_validation():
@@ -173,6 +183,14 @@ def test_cuda_performance_defaults():
     cuda = AppConfig().model.cuda
     assert cuda.allow_tf32 is True
     assert cuda.cudnn_benchmark is True
+    assert cuda.matmul_precision == "high"
+
+
+def test_cuda_matmul_precision_rejects_unknown():
+    from epoch_ai.config.settings import CudaPerformanceConfig
+
+    with pytest.raises(ValueError, match="matmul_precision"):
+        CudaPerformanceConfig.model_validate({"matmul_precision": "turbo"})
 
 
 def test_registry_defaults_include_register_each_retrain():

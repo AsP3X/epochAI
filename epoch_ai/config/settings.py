@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class DataConfig(BaseModel):
@@ -337,6 +337,32 @@ class EvolutionConfig(BaseModel):
             "improvement (null = run all generations)."
         ),
     )
+    successive_halving: bool = Field(
+        default=False,
+        description=(
+            "Multi-fidelity evolution: train the whole population for a short proxy "
+            "budget, then fully train only the top survivors. Cuts wasted GPU time so a "
+            "larger population/generation budget fits the same wall clock."
+        ),
+    )
+    sh_proxy_epoch_fraction: float = Field(
+        default=0.3,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Fraction of nn.max_epochs used for the cheap proxy rung when "
+            "successive_halving is true."
+        ),
+    )
+    sh_promote_fraction: float = Field(
+        default=0.34,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Fraction of the population promoted from the proxy rung to full training "
+            "(clamped to be >= elite count) when successive_halving is true."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_cuda_worker_tiers(self) -> EvolutionConfig:
@@ -373,6 +399,23 @@ class CudaPerformanceConfig(BaseModel):
         default=True,
         description="Enable cudnn.benchmark for fixed-shape MLP training on CUDA.",
     )
+    matmul_precision: str = Field(
+        default="high",
+        description=(
+            "torch.set_float32_matmul_precision mode: 'high'/'medium' route fp32 matmuls "
+            "through tensor cores (faster on Ampere+); 'highest' keeps strict fp32."
+        ),
+    )
+
+    @field_validator("matmul_precision")
+    @classmethod
+    def _validate_matmul_precision(cls, value: str) -> str:
+        allowed = {"highest", "high", "medium"}
+        if value not in allowed:
+            raise ValueError(
+                f"model.cuda.matmul_precision must be one of {sorted(allowed)}."
+            )
+        return value
 
 
 class NNConfig(BaseModel):

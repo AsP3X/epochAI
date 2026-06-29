@@ -246,7 +246,9 @@ def test_registry_save_skips_prune_when_requested(market, small_config, tmp_path
         )
 
     assert len(registry._sorted_version_labels()) == 5
-    registry.prune_old_versions(keep=3, protect=set(labels))
+    # Protect only the most recent label; deferred prune should drop the oldest ones
+    # while honouring the protected set.
+    registry.prune_old_versions(keep=3, protect={labels[-1]})
     remaining = registry._sorted_version_labels()
     assert len(remaining) == 3
     assert remaining == labels[-3:]

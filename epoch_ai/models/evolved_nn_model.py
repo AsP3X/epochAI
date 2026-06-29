@@ -153,7 +153,7 @@ class EvolvedNNModel(BaseModel):
                 return None
             return seed_state
 
-        def _train_candidate(genome: NNGenome):
+        def _train_candidate(genome: NNGenome, max_epochs_override: int | None = None):
             result = train_genome(
                 x_arr,
                 y_arr,
@@ -168,8 +168,35 @@ class EvolvedNNModel(BaseModel):
                 initial_state=_initial_state(genome),
                 multi_head=mh,
                 primary_horizon=ph,
+                max_epochs_override=max_epochs_override,
             )
             return result.val_loss, genome, result
+
+        def _score_population(genomes, mapper):
+            """Rank ``genomes`` by val loss; optional successive-halving proxy rung.
+
+            ``mapper`` is ``pool.map`` (parallel) or the builtin ``map`` (sequential).
+            With successive halving on, the whole population trains for a short proxy
+            budget, then only the top survivors are fully trained; the returned scores
+            (and therefore the generation winner and elites) are always full-fidelity.
+            """
+            if evolution.successive_halving and len(genomes) > 2:
+                proxy_epochs = max(
+                    1, round(nn_cfg.max_epochs * evolution.sh_proxy_epoch_fraction)
+                )
+                cheap = list(mapper(lambda g: _train_candidate(g, proxy_epochs), genomes))
+                cheap.sort(key=lambda item: item[0])
+                elite_n = max(1, int(evolution.population_size * evolution.elite_fraction))
+                n_promote = max(
+                    elite_n, round(len(genomes) * evolution.sh_promote_fraction)
+                )
+                n_promote = min(max(1, n_promote), len(genomes))
+                survivors = [g for _, g, _ in cheap[:n_promote]]
+                ranked = list(mapper(lambda g: _train_candidate(g, None), survivors))
+            else:
+                ranked = list(mapper(lambda g: _train_candidate(g, None), genomes))
+            ranked.sort(key=lambda item: item[0])
+            return ranked
 
         if evolution.fast_fit or not evolution.enabled:
             best_genome = seed_genome if seed_genome is not None else default_genome(nn_cfg)
@@ -215,19 +242,19 @@ class EvolvedNNModel(BaseModel):
                 and len(population) > 1
             )
             logger.info(
-                "evolved_nn evolution: workers=%d population=%d generations=%d parallel=%s",
+                "evolved_nn evolution: workers=%d population=%d generations=%d "
+                "parallel=%s successive_halving=%s",
                 max_workers,
                 evolution.population_size,
                 evolution.generations,
                 use_parallel,
+                evolution.successive_halving,
             )
 
             if use_parallel:
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     for generation in range(evolution.generations):
-                        scores = list(pool.map(_train_candidate, population))
-
-                        scores.sort(key=lambda item: item[0])
+                        scores = _score_population(population, pool.map)
                         gen_best_loss, gen_best_genome, gen_best_result = scores[0]
                         logger.info(
                             "evolved_nn generation=%d best_val_loss=%.5f genome=%s",
@@ -269,9 +296,7 @@ class EvolvedNNModel(BaseModel):
                         population = next_pop
             else:
                 for generation in range(evolution.generations):
-                    scores = [_train_candidate(genome) for genome in population]
-
-                    scores.sort(key=lambda item: item[0])
+                    scores = _score_population(population, map)
                     gen_best_loss, gen_best_genome, gen_best_result = scores[0]
                     logger.info(
                         "evolved_nn generation=%d best_val_loss=%.5f genome=%s",

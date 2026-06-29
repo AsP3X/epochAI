@@ -125,13 +125,25 @@ def configure_cuda_runtime(device, config: ModelConfig) -> None:
         torch.backends.cudnn.allow_tf32 = True
     if cuda_cfg.cudnn_benchmark:
         torch.backends.cudnn.benchmark = True
+    # Human: route fp32 matmuls through TF32/bf16 tensor cores; biggest single throughput win
+    #        for the small dense MLPs in evolution. "highest" keeps strict fp32.
+    # Agent: CONFIG cuda.matmul_precision; safe no-op on non-Ampere GPUs.
+    if cuda_cfg.matmul_precision and cuda_cfg.matmul_precision != "highest":
+        try:
+            torch.set_float32_matmul_precision(cuda_cfg.matmul_precision)
+        except (ValueError, AttributeError):
+            logger.warning(
+                "Unsupported matmul_precision=%r; leaving Torch default.",
+                cuda_cfg.matmul_precision,
+            )
     _CUDA_RUNTIME_CONFIGURED = True
     props = torch.cuda.get_device_properties(device)
     vram_gb = props.total_memory / (1024**3)
     logger.info(
-        "CUDA runtime: tf32=%s cudnn.benchmark=%s (%s, %.1f GB VRAM).",
+        "CUDA runtime: tf32=%s cudnn.benchmark=%s matmul=%s (%s, %.1f GB VRAM).",
         cuda_cfg.allow_tf32,
         cuda_cfg.cudnn_benchmark,
+        cuda_cfg.matmul_precision,
         props.name,
         vram_gb,
     )
@@ -385,6 +397,7 @@ def train_genome(
     initial_state: dict[str, object] | None = None,
     multi_head: MultiHeadSpec | None = None,
     primary_horizon: int | None = None,
+    max_epochs_override: int | None = None,
 ) -> TrainResult:
     """Fit weights for ``genome`` with Adam and time-ordered early stopping.
 
@@ -400,9 +413,14 @@ def train_genome(
         refit_full: When ``True``, retrain on all rows for ``best_epoch`` rounds.
         cache: Optional pre-built device tensors (same split for every genome in one fit).
         initial_state: Optional warm-start weights when architecture matches ``genome``.
+        max_epochs_override: Cap the early-stopping epoch budget below ``nn.max_epochs``
+            (used by successive-halving proxy rungs); ``None`` keeps the configured value.
     """
     torch, nn = _import_torch()
     nn_cfg = config.nn
+    # Human: successive-halving cheap rungs pass a reduced budget; full rungs pass None.
+    # Agent: CAUSAL only changes how many epochs we train, not which bars are in train.
+    max_epochs = nn_cfg.max_epochs if max_epochs_override is None else max(1, int(max_epochs_override))
 
     if cache is None:
         cache = build_training_cache(
@@ -480,7 +498,7 @@ def train_genome(
         patience_left = nn_cfg.patience
         min_batch = _min_train_batch(genome)
 
-        for epoch in range(nn_cfg.max_epochs):
+        for epoch in range(max_epochs):
             model.train()
             n = len(x_train_t)
             indices = torch.randperm(n, device=device)
@@ -517,7 +535,7 @@ def train_genome(
                 optimizer.step()
 
             if x_val_t is None or y_val_t is None:
-                if epoch + 1 >= min(nn_cfg.max_epochs // 4, 30):
+                if epoch + 1 >= min(max_epochs // 4, 30):
                     best_state = {
                         k: v.detach().clone() for k, v in base_model.state_dict().items()
                     }
@@ -568,7 +586,7 @@ def train_genome(
 
         if best_state is None:
             best_state = {k: v.detach().clone() for k, v in base_model.state_dict().items()}
-            best_epoch = max(1, nn_cfg.max_epochs // 4)
+            best_epoch = max(1, max_epochs // 4)
 
         if refit_full and split < len(x):
             full_scaler = StandardScaler()

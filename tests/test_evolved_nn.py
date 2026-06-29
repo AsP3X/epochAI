@@ -319,6 +319,60 @@ def test_train_genome_tolerates_trailing_singleton_batch():
     assert result.state_dict
 
 
+def test_train_genome_respects_max_epochs_override():
+    """Successive-halving proxy rung must cap training at the override budget."""
+    from epoch_ai.config.settings import ModelConfig
+    from epoch_ai.models.nn_genome import NNGenome
+    from epoch_ai.models.nn_trainer import train_genome
+
+    n_train, n_val = 600, 120
+    n = n_train + n_val
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal((n, 12)).astype(np.float32)
+    y = (rng.random(n) > 0.5).astype(np.float32)
+
+    config = ModelConfig(
+        backend="evolved_nn",
+        val_fraction=0.15,
+        # high patience so early stopping does not mask the epoch cap
+        nn={"max_epochs": 40, "patience": 100, "batch_size": 64, "val_check_interval": 1},
+    )
+    genome = NNGenome(
+        hidden_sizes=[32],
+        dropout=0.0,
+        learning_rate=1e-3,
+        weight_decay=0.0,
+        use_batch_norm=True,
+    )
+    kwargs = dict(
+        task="classification",
+        sample_weight=None,
+        val_fraction=0.15,
+        split=n_train,
+    )
+    cheap = train_genome(x, y, genome, config, max_epochs_override=3, **kwargs)
+    assert 1 <= cheap.best_epoch <= 3
+
+
+@pytest.mark.slow
+def test_successive_halving_evolution_completes(market, small_config):
+    cfg = _evolved_config(small_config)
+    cfg.model.evolution.fast_fit = False
+    cfg.model.evolution.parallel_candidates = False
+    cfg.model.evolution.successive_halving = True
+    cfg.model.evolution.sh_proxy_epoch_fraction = 0.25
+    cfg.model.evolution.sh_promote_fraction = 0.5
+    cfg.model.evolution.population_size = 4
+    cfg.model.evolution.generations = 1
+    cfg.model.nn.max_epochs = 8
+    cfg.model.nn.patience = 2
+    x, y = _xy(market, cfg)
+    model = EvolvedNNModel(cfg.model).fit(x.iloc[:1200], y.iloc[:1200])
+    assert model.genome_ is not None
+    preds = model.predict(x.iloc[1200:1300])
+    assert ((preds >= 0) & (preds <= 1)).all()
+
+
 def test_initialize_population_from_seed():
     from epoch_ai.config.settings import EvolutionConfig, NNConfig
     from epoch_ai.models.nn_genome import default_genome, initialize_population_from_seed

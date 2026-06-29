@@ -99,6 +99,11 @@ model:
     cuda_worker_vram_gb: [8, 16, 24, 40]   # ascending GB thresholds
     cuda_worker_caps: [2, 4, 6, 8, 12]     # len = len(vram_gb)+1; caps[i+1] when VRAM >= tier[i]
     early_stop_patience: null     # stop after N generations w/o improvement (null = off)
+  # Multi-fidelity search: short-train all candidates, full-train only the best.
+  # Frees GPU time so a larger population/generations fits the same wall clock.
+    successive_halving: false       # true = proxy rung + promote survivors
+    sh_proxy_epoch_fraction: 0.3    # proxy rung uses 30% of nn.max_epochs
+    sh_promote_fraction: 0.34       # fully train top ~third (clamped >= elite count)
   # Weak GPU example (4–6 GB, e.g. GTX 1650 / T4 with tight VRAM):
   #   max_workers: 2
   #   cuda_worker_cap_max: 2
@@ -107,6 +112,7 @@ model:
   # High-end example (A6000 48 GB) — raise caps only if VRAM headroom is comfortable:
   #   cuda_worker_cap_max: 12
   #   cuda_batch_cap: 4096
+  #   successive_halving: true   # then bump population_size/generations for better search
   # ---------------------------------------------------------------------------
   # evolved_nn MLP depth / width (only when backend: evolved_nn).
   # Evolution picks hidden layer count in [min_layers, max_layers] and each
@@ -146,6 +152,7 @@ model:
   cuda:
     allow_tf32: true               # Ampere+ matmul speedup
     cudnn_benchmark: true
+    matmul_precision: high         # high/medium = tensor-core fp32 matmul; highest = strict fp32
   num_boost_round: 300
   early_stopping_rounds: 30
   val_fraction: 0.15          # time-ordered tail for early stopping + calibration
