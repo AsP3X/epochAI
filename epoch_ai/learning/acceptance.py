@@ -52,12 +52,17 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
     data = features.join(multi).dropna()
 
     predictor_metrics: dict[str, float] = {}
+    # Agent: when set, policy benchmarks run on the REAL model's forecasts (not the
+    #        price-only proxy). horizons aligned to ``structured``; close aligned to ``data``.
+    structured: dict[int, dict[str, object]] | None = None
+    real_horizons: list[int] = []
     registry = ModelRegistry(config.model.model_dir)
     try:
         model, _ = registry.load(None, config.model, task=config.prediction.task)
         if isinstance(model, MultiHeadModel) and model.multi_head_spec_ is not None:
             structured = model.predict_structured(data[features.columns])
             horizons = model.multi_head_spec_.horizons
+            real_horizons = list(horizons)
             labels_by_h = {h: data[f"target_{h}"].to_numpy(dtype=float) for h in horizons}
             returns_by_h = {h: data[f"ret_{h}"].to_numpy(dtype=float) for h in horizons}
             predictor_metrics = multi_horizon_classification_step_metrics(
@@ -81,8 +86,22 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
     except FileNotFoundError:
         predictor_metrics = {}
 
-    close = holdout_market["close"]
-    holdout_df = pd.DataFrame({"close": close})
+    # Human: build a fresh replay env for each benchmark run. With a usable multi-head
+    #        model we score the policy on its real per-bar forecasts; otherwise we fall
+    #        back to the price-only proxy env (no model available).
+    # Agent: CAUSAL real path via from_forecasts (return shifted -1); close aligned to data rows.
+    if structured is not None and real_horizons:
+        close_for_env = holdout_market.loc[data.index, "close"].astype(float)
+
+        def make_env() -> TradingReplayEnv:
+            return TradingReplayEnv.from_forecasts(
+                config, close_for_env, structured, real_horizons
+            )
+    else:
+        holdout_df = pd.DataFrame({"close": holdout_market["close"]})
+
+        def make_env() -> TradingReplayEnv:
+            return TradingReplayEnv.from_market(config, holdout_df.copy())
 
     def baseline_fn(env: TradingReplayEnv) -> float:
         return baseline_weight(config, env.current_forecast(), env.portfolio)
@@ -90,14 +109,8 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
     def buy_hold_fn(_env: TradingReplayEnv) -> float:
         return config.trading.max_position_fraction * config.risk.max_leverage
 
-    baseline = replay_metrics(
-        TradingReplayEnv.from_market(config, holdout_df.copy()),
-        baseline_fn,
-    )
-    buy_hold = replay_metrics(
-        TradingReplayEnv.from_market(config, holdout_df.copy()),
-        buy_hold_fn,
-    )
+    baseline = replay_metrics(make_env(), baseline_fn)
+    buy_hold = replay_metrics(make_env(), buy_hold_fn)
 
     champion_metrics: dict[str, float] = {}
     champion_path = Path(config.rl.promotion.champion_path)
@@ -109,10 +122,7 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
             obs = build_observation(env.current_forecast(), env.portfolio, config)
             return float(policy.act(obs, deterministic=True) * cap)
 
-        replay = replay_metrics(
-            TradingReplayEnv.from_market(config, holdout_df.copy()),
-            ppo_fn,
-        )
+        replay = replay_metrics(make_env(), ppo_fn)
         champion_metrics = {
             "total_return": replay.total_return,
             "sharpe": replay.sharpe,

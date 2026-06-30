@@ -66,6 +66,68 @@ def test_env_step_respects_caps():
             break
 
 
+def test_from_forecasts_uses_real_p_up_and_is_causal():
+    # Agent: from_forecasts must surface the injected per-bar p_up (not the price proxy)
+    #        and align returns causally (forecast at bar i earns the i->i+1 return).
+    config = _policy_config()
+    close = pd.Series(np.linspace(100.0, 120.0, 50))
+    horizons = list(config.prediction.horizons)
+    n = len(close)
+    structured = {
+        h: {
+            "p_up": np.full(n, 0.9, dtype=float),
+            "q10": np.full(n, -0.01, dtype=float),
+            "q50": np.zeros(n, dtype=float),
+            "q90": np.full(n, 0.01, dtype=float),
+        }
+        for h in horizons
+    }
+    env = TradingReplayEnv.from_forecasts(config, close, structured, horizons)
+    env.reset()
+
+    # Injected p_up flows through to the forecast emitted at the current bar.
+    fc = env.current_forecast()
+    assert fc.model_version == "replay-real"
+    assert all(abs(h.p_up - 0.9) < 1e-6 for h in fc.horizons)
+
+    # Causal return alignment: returns[i] == close[i+1]/close[i] - 1; last row padded to 0.
+    expected = close.pct_change().shift(-1).fillna(0.0).to_numpy()
+    assert np.allclose(env.returns, expected, atol=1e-6)
+    assert env.returns[-1] == 0.0
+
+
+def test_from_forecasts_baseline_trades_on_confident_signal():
+    # Human: this is the regression guard for the holdout zero-trade bug -- a confident
+    #        real forecast on a rising market must produce a non-flat, profitable baseline.
+    # Agent: baseline_weight over from_forecasts env -> long, positive total_return.
+    from epoch_ai.execution.policy.executor import baseline_weight
+    from epoch_ai.learning.policy_promotion import replay_metrics
+
+    config = _policy_config(trading={"reliability_floor": 0.1, "max_position_fraction": 0.5})
+    close = pd.Series(np.linspace(100.0, 130.0, 60))
+    horizons = list(config.prediction.horizons)
+    n = len(close)
+    # Decisive p_up + tight bands -> confidence clears the reliability floor.
+    structured = {
+        h: {
+            "p_up": np.full(n, 0.95, dtype=float),
+            "q10": np.full(n, -0.001, dtype=float),
+            "q50": np.full(n, 0.005, dtype=float),
+            "q90": np.full(n, 0.01, dtype=float),
+        }
+        for h in horizons
+    }
+
+    def baseline_fn(env: TradingReplayEnv) -> float:
+        return baseline_weight(config, env.current_forecast(), env.portfolio)
+
+    metrics = replay_metrics(
+        TradingReplayEnv.from_forecasts(config, close, structured, horizons),
+        baseline_fn,
+    )
+    assert metrics.total_return > 0.0
+
+
 def test_build_observation_uses_reliable_heads_only():
     config = _policy_config()
     portfolio = PortfolioState.initial(10_000.0)

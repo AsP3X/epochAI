@@ -26,6 +26,12 @@ class TradingReplayEnv:
     returns: np.ndarray
     p_up_series: np.ndarray
     obs_dim: int
+    # Human: When set, current_forecast() emits the REAL model's per-bar/per-horizon
+    #        forecast (p_up + return quantiles) instead of the price-only proxy. Used by
+    #        the holdout acceptance benchmark so the policy is scored on the actual model.
+    # Agent: dict horizon -> {"p_up","q10","q50","q90"} arrays aligned to ``returns`` rows;
+    #        None => proxy mode (PPO training path). CAUSAL: see from_forecasts shift.
+    structured_forecasts: dict[int, dict[str, np.ndarray]] | None = None
     _pos: int = 0
     portfolio: PortfolioState = field(init=False)
     _prev_equity: float = field(init=False)
@@ -50,6 +56,50 @@ class TradingReplayEnv:
             obs_dim=observation_dim(config),
         )
 
+    @classmethod
+    def from_forecasts(
+        cls,
+        config: AppConfig,
+        close: pd.Series,
+        structured: dict[int, dict[str, np.ndarray]],
+        horizons: list[int],
+    ) -> TradingReplayEnv:
+        """Build env from a close series + the real model's per-bar structured forecasts.
+
+        Unlike :meth:`from_market`, this scores the policy on the actual trained model's
+        ``p_up``/quantiles. The return series is shifted so the position sized from the
+        causal forecast at bar ``i`` earns the bar ``i -> i+1`` return (no look-ahead).
+
+        Args:
+            close: Close prices aligned 1:1 with the rows of ``structured`` (prediction rows).
+            structured: ``predict_structured`` output: horizon -> {"p_up","q10","q50","q90"}.
+            horizons: Horizons to expose to the policy (order preserved).
+        """
+        close = close.astype(float)
+        # Human: forecast at row i is causal (features up to i); it must earn the return
+        #        realized from bar i to i+1, so we shift pct_change() forward by one.
+        # Agent: CAUSAL; returns[i] = (close[i+1]/close[i]-1); last row -> 0 (no next bar).
+        rets = close.pct_change().shift(-1).fillna(0.0).to_numpy(dtype=np.float32)
+        forecasts = {
+            int(h): {
+                "p_up": np.asarray(structured[h]["p_up"], dtype=np.float32).reshape(-1),
+                "q10": np.asarray(structured[h]["q10"], dtype=np.float32).reshape(-1),
+                "q50": np.asarray(structured[h]["q50"], dtype=np.float32).reshape(-1),
+                "q90": np.asarray(structured[h]["q90"], dtype=np.float32).reshape(-1),
+            }
+            for h in horizons
+        }
+        # Agent: p_up_series feeds the proxy obs only; expose primary horizon for parity.
+        primary = config.prediction.horizon
+        primary = primary if primary in forecasts else next(iter(forecasts))
+        return cls(
+            config=config,
+            returns=rets,
+            p_up_series=forecasts[primary]["p_up"],
+            obs_dim=observation_dim(config),
+            structured_forecasts=forecasts,
+        )
+
     @property
     def done(self) -> bool:
         return self._pos >= len(self.returns) - 1
@@ -62,8 +112,35 @@ class TradingReplayEnv:
 
     def current_forecast(self) -> MultiHorizonPredictionResult:
         ts = pd.Timestamp("2020-01-01") + pd.Timedelta(minutes=self._pos)
-        p_up = float(self.p_up_series[self._pos])
         bar_minutes = timeframe_to_minutes(self.config.timeframe)
+        if self.structured_forecasts is not None:
+            # Agent: real-model path; emit per-horizon p_up + return quantiles at this bar.
+            #        reliability_floor=0.0 here so the baseline_policy gate (trading.
+            #        reliability_floor) is the single source of the reliability filter.
+            forecasts = [
+                build_horizon_forecast(
+                    as_of=ts,
+                    last_close=1.0,
+                    horizon=h,
+                    horizon_label=self.config.prediction.horizon_label(h),
+                    bar_minutes=bar_minutes,
+                    p_up=float(block["p_up"][self._pos]),
+                    q10=float(block["q10"][self._pos]),
+                    q50=float(block["q50"][self._pos]),
+                    q90=float(block["q90"][self._pos]),
+                    reliability_floor=0.0,
+                )
+                for h, block in self.structured_forecasts.items()
+            ]
+            return MultiHorizonPredictionResult(
+                as_of=str(ts),
+                last_close=1.0,
+                model_version="replay-real",
+                symbol=self.config.primary_symbol,
+                timeframe=self.config.timeframe,
+                horizons=forecasts,
+            )
+        p_up = float(self.p_up_series[self._pos])
         horizons = (
             self.config.trading.decision_horizons or self.config.prediction.horizons
         )
