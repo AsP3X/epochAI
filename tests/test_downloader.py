@@ -163,6 +163,51 @@ def test_extends_cache_instead_of_redownloading(tmp_path):
     assert last_ms < int(df.index[200].timestamp() * 1000)
 
 
+def test_extends_forward_when_cache_reaches_exchange_earliest(tmp_path):
+    """A live cache at the exchange's earliest candle must extend, not re-backfill.
+
+    Regression: with an ``earliest`` start that resolves earlier than the exchange's
+    first available candle, the cache can never reach the configured start date, so the
+    downloader used to re-download the entire history every run. It must instead detect
+    that the cache already holds all available history and only fetch new bars.
+    """
+    config = AppConfig.model_validate(
+        {
+            "data": {
+                "data_dir": str(tmp_path / "data"),
+                "historical_start_date": "earliest",
+            }
+        }
+    )
+    downloader = HistoricalDownloader(config)
+    cached = _ohlcv_frame(2000, live=True)  # begins long after the 2017 fallback start
+    cache_path = downloader._cache_path(config.primary_symbol)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cached.to_parquet(cache_path)
+
+    tf_ms = 15 * 60_000
+
+    def fake_download_ccxt(self, symbol, target_bars, *, base_df=None, since_ts=None, until_ts=None, recent_tail=False):
+        del symbol, target_bars, since_ts, until_ts, recent_tail
+        # Extend-forward path passes the cached frame; a full re-backfill would not.
+        assert base_df is not None, "must extend cache, not re-backfill from scratch"
+        since_ms = int(base_df.index.max().timestamp() * 1000) + tf_ms
+        rows = [[since_ms + i * tf_ms, 1.0, 2.0, 0.5, 1.5, 10.0] for i in range(3)]
+        new_df = HistoricalDownloader._rows_to_dataframe(rows)
+        return pd.concat([base_df, new_df])
+
+    with patch.object(
+        HistoricalDownloader,
+        "_exchange_earliest_ts",
+        lambda self, sym: cached.index.min(),
+    ):
+        with patch.object(HistoricalDownloader, "_download_ccxt", fake_download_ccxt):
+            with patch.object(downloader, "_default_bar_count", return_value=10_000_000):
+                df = downloader.load_or_download(n_bars=None)
+
+    assert len(df) == 2003  # original cache + 3 freshly fetched bars
+
+
 def test_window_fetch_skips_when_listing_after_window(tmp_path, monkeypatch):
     """Context window fetch must not treat post-window listings as a successful download."""
     config = AppConfig.model_validate({"data": {"data_dir": str(tmp_path / "data")}})

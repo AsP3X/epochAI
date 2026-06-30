@@ -47,6 +47,9 @@ class HistoricalDownloader:
         self.config = config
         self.data_dir = Path(config.data.data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # Memoized earliest-available candle per symbol (probed lazily; see
+        # _exchange_earliest_ts). Avoids re-probing within one downloader instance.
+        self._earliest_ts_cache: dict[str, pd.Timestamp | None] = {}
 
     # ------------------------------------------------------------------paths
     def _cache_path(self, symbol: str) -> Path:
@@ -136,8 +139,8 @@ class HistoricalDownloader:
                 target_default = self._default_bar_count()
                 if (
                     len(cached) >= target_default
-                    and self._cache_covers_start(cached)
                     and self._cache_is_live(cached)
+                    and self._cache_covers_start(cached, symbol)
                 ):
                     logger.info("Loaded %d cached bars for %s from %s", len(cached), symbol, cache)
                     return self._finalize_load(
@@ -156,7 +159,7 @@ class HistoricalDownloader:
         target_bars = n_bars or self._default_bar_count()
         recent_tail = n_bars is not None
         if cached is not None and len(cached) > 0 and not recent_tail:
-            if len(cached) >= target_bars or self._cache_covers_start(cached):
+            if len(cached) >= target_bars or self._cache_covers_start(cached, symbol):
                 logger.info(
                     "Extending cached %s history: %d -> %d bars (%s)",
                     symbol,
@@ -318,13 +321,62 @@ class HistoricalDownloader:
         now = pd.Timestamp.now(tz="UTC")
         return cached.index.max() >= now - tf * 3
 
-    def _cache_covers_start(self, cached: pd.DataFrame) -> bool:
-        """True when cached history begins near the configured start date."""
+    def _cache_covers_start(self, cached: pd.DataFrame, symbol: str) -> bool:
+        """True when cached history reaches as far back as we can actually fetch.
+
+        The cache "covers start" when it begins near the configured start date, **or**
+        — when the configured start predates the symbol's exchange listing — when it
+        already reaches the exchange's earliest available candle. The latter probe
+        prevents pointlessly re-backfilling the whole history on every run for symbols
+        whose data simply does not extend back to ``historical_start_date`` (e.g. an
+        ``earliest`` start that resolves to 2017 while binanceusdm futures begin 2019).
+        """
         if cached.empty:
             return False
         start = datetime.fromisoformat(self.config.data.start_date_iso()).replace(tzinfo=UTC)
         tf = pd.Timedelta(minutes=timeframe_to_minutes(self.config.timeframe))
-        return cached.index.min() <= start + tf * 2
+        if cached.index.min() <= pd.Timestamp(start) + tf * 2:
+            return True
+        # Cache starts later than the configured start: it may already hold all the
+        # history the exchange offers. Probe the earliest candle and accept the cache
+        # when it reaches that bar; on probe failure keep the conservative answer.
+        earliest = self._exchange_earliest_ts(symbol)
+        if earliest is None:
+            return False
+        return cached.index.min() <= earliest + tf * 2
+
+    def _exchange_earliest_ts(self, symbol: str) -> pd.Timestamp | None:
+        """Probe the exchange's earliest available candle timestamp (memoized).
+
+        Returns ``None`` when ccxt is unavailable or the exchange cannot be reached, so
+        callers fall back to conservative behaviour. The result is cached per symbol for
+        the lifetime of this downloader to avoid repeat probes.
+        """
+        if symbol in self._earliest_ts_cache:
+            return self._earliest_ts_cache[symbol]
+        earliest: pd.Timestamp | None = None
+        try:
+            import ccxt  # noqa: PLC0415 - optional dependency, imported lazily
+
+            exchange_cls = getattr(ccxt, self.config.data.exchange, None)
+            if exchange_cls is not None:
+                exchange = exchange_cls({"enableRateLimit": True})
+                since = self._start_since_ms(exchange)
+                batch = exchange.fetch_ohlcv(
+                    symbol, timeframe=self.config.timeframe, since=since, limit=1
+                )
+                if batch:
+                    earliest = pd.to_datetime(batch[0][0], unit="ms", utc=True)
+                    logger.info(
+                        "Exchange earliest %s candle (%s) is %s.",
+                        symbol,
+                        self.config.timeframe,
+                        earliest,
+                    )
+        except Exception as exc:  # noqa: BLE001 - probe is best-effort context
+            logger.info("Could not probe earliest %s candle: %s", symbol, exc)
+        self._earliest_ts_cache[symbol] = earliest
+        return earliest
 
     def _since_ms_for_recent_bars(self, exchange, target_bars: int) -> int:
         """Estimate ``since`` so paginating forward yields roughly the latest ``target_bars``."""
