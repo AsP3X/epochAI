@@ -69,7 +69,22 @@ def test_multi_horizon_defaults():
     assert config.prediction.quantiles == [0.1, 0.5, 0.9]
     assert config.prediction.max_horizon == 60
     assert config.prediction.n_outputs == 24  # 6 horizons x (3 quantiles + 1 direction)
-    assert config.prediction.horizon_label(60) == "1hr"
+    # Default timeframe is 15m, so 60 candles = 900 minutes = 15h.
+    assert config.prediction.horizon_label(60) == "15h"
+
+
+def test_horizon_label_scales_with_timeframe():
+    cfg_5m = AppConfig.model_validate(
+        {"timeframe": "5m", "prediction": {"horizon": 12, "horizons": [1, 3, 6, 12, 24, 48]}}
+    )
+    labels = [cfg_5m.prediction.horizon_label(h) for h in [1, 3, 6, 12, 24, 48]]
+    assert labels == ["5m", "15m", "30m", "1h", "2h", "4h"]
+
+    cfg_1m = AppConfig.model_validate(
+        {"timeframe": "1m", "prediction": {"horizon": 60, "horizons": [1, 5, 60]}}
+    )
+    assert cfg_1m.prediction.horizon_label(1) == "1m"
+    assert cfg_1m.prediction.horizon_label(60) == "1h"
 
 
 def test_embargo_resolves_to_max_horizon():

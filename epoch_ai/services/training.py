@@ -64,7 +64,9 @@ def resolve_training_bars(
         return None
 
     target = downloader._default_bar_count()
-    if len(cached) >= target * 0.95 and downloader._cache_covers_start(cached):
+    if len(cached) >= target * 0.95 and downloader._cache_covers_start(
+        cached, config.primary_symbol
+    ):
         return None
 
     logger.info(

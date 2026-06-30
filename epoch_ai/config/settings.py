@@ -13,7 +13,22 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+
+from epoch_ai.utils.timeframe import timeframe_to_minutes
+
+
+def _format_duration_label(minutes: int) -> str:
+    """Render a minute count as a compact human label (e.g. 5->``5m``, 60->``1h``)."""
+    if minutes <= 0:
+        return "0m"
+    if minutes % (60 * 24) == 0:
+        return f"{minutes // (60 * 24)}d"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h{minutes % 60}m"
 
 
 class DataConfig(BaseModel):
@@ -217,6 +232,11 @@ class PredictionConfig(BaseModel):
         description="Dead-zone half-width around threshold; ambiguous bars are dropped.",
     )
 
+    # Minutes per base bar, injected by AppConfig so horizon labels reflect the
+    # configured timeframe (e.g. horizon 12 at a 5m base -> "1h"). Defaults to 1 when a
+    # PredictionConfig is used standalone without a parent AppConfig.
+    _bar_minutes: int = PrivateAttr(default=1)
+
     @model_validator(mode="after")
     def _normalize_horizons(self) -> PredictionConfig:
         if not self.horizons:
@@ -241,9 +261,13 @@ class PredictionConfig(BaseModel):
         return max(self.horizons)
 
     def horizon_label(self, horizon: int) -> str:
-        """Human label for a horizon candle count (e.g. ``60`` -> ``1hr`` on 1m base)."""
-        labels = {1: "1m", 5: "5m", 10: "10m", 15: "15m", 30: "30m", 60: "1hr"}
-        return labels.get(horizon, f"{horizon}b")
+        """Human label for a horizon candle count, scaled by the base timeframe.
+
+        The label reflects wall-clock duration: ``horizon`` candles times the base bar
+        size injected by :class:`AppConfig`. For example, horizon ``12`` on a 5m base is
+        ``"1h"``; the same count on a 1m base is ``"12m"``.
+        """
+        return _format_duration_label(horizon * self._bar_minutes)
 
     @property
     def n_outputs(self) -> int:
@@ -1061,6 +1085,9 @@ class AppConfig(BaseModel):
     def _validate(self) -> AppConfig:
         if not self.symbols:
             raise ValueError("At least one symbol must be configured.")
+        # Inject the base bar size so prediction horizon labels render wall-clock
+        # durations for the configured timeframe (e.g. horizon 12 at 5m -> "1h").
+        self.prediction._bar_minutes = timeframe_to_minutes(self.timeframe)
         if self.prediction.horizon < 1:
             raise ValueError("prediction.horizon must be >= 1 candle.")
         max_h = self.prediction.max_horizon
