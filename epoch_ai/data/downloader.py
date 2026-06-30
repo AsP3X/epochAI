@@ -63,6 +63,7 @@ class HistoricalDownloader:
         force: bool = False,
         fetch_if_missing: bool = True,
         skip_enrichment: bool = False,
+        full_history: bool = False,
     ) -> pd.DataFrame:
         """Return cleaned data for ``symbol``, using cache when available.
 
@@ -85,6 +86,8 @@ class HistoricalDownloader:
                 exchange (``train`` default). Raises if cache is missing or too small.
             skip_enrichment: When ``True``, skip cross-asset/sentiment/basis joins
                 (used when loading context symbols).
+            full_history: When ``True`` with ``n_bars=None``, backfill from exchange
+                start even when the cache already holds a long recent tail.
 
         Returns:
             A cleaned OHLCV(+context) DataFrame indexed by ``timestamp``.
@@ -129,9 +132,13 @@ class HistoricalDownloader:
         cached: pd.DataFrame | None = None
         if cache.exists() and not force:
             cached = pd.read_parquet(cache)
-            if n_bars is None:
+            if n_bars is None and not full_history:
                 target_default = self._default_bar_count()
-                if len(cached) >= target_default:
+                if (
+                    len(cached) >= target_default
+                    and self._cache_covers_start(cached)
+                    and self._cache_is_live(cached)
+                ):
                     logger.info("Loaded %d cached bars for %s from %s", len(cached), symbol, cache)
                     return self._finalize_load(
                         self._tail(cached, n_bars),

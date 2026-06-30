@@ -20,8 +20,27 @@ def test_cli_info_with_set():
 def test_cli_download(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "cfg.yaml"
-    cfg.write_text("data:\n  data_dir: artifacts/data\n")
+    cfg.write_text(
+        "data:\n"
+        "  use_synthetic_fallback: true\n"
+        "  data_dir: artifacts/data\n"
+    )
     assert main(["download", "--config", str(cfg), "--bars", "500"]) == 0
+
+
+def test_cli_download_full_history(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        """
+timeframe: 1h
+data:
+  use_synthetic_fallback: true
+  data_dir: artifacts/data
+  historical_start_date: "2025-01-01"
+"""
+    )
+    assert main(["download", "--config", str(cfg), "--full-history"]) == 0
 
 
 @pytest.mark.slow

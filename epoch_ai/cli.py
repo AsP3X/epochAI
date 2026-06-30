@@ -406,8 +406,17 @@ def cmd_evaluate_holdout(args: argparse.Namespace) -> int:
 def cmd_download(args: argparse.Namespace) -> int:
     """Download or synthesize historical data and cache it as parquet."""
     config = _load(args)
+    if args.full_history and args.bars is not None:
+        logger.error("Use either --full-history or --bars, not both.")
+        return 1
+    n_bars = None if args.full_history else args.bars
     downloader = HistoricalDownloader(config)
-    df = downloader.load_or_download(config.primary_symbol, n_bars=args.bars, force=args.force)
+    df = downloader.load_or_download(
+        config.primary_symbol,
+        n_bars=n_bars,
+        force=args.force,
+        full_history=args.full_history,
+    )
     logger.info(
         "Data ready: %s | %d bars | %s -> %s",
         config.primary_symbol,
@@ -1122,6 +1131,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_dl = sub.add_parser("download", help="Download/synthesize and cache history.", parents=[parent])
     p_dl.add_argument("--bars", type=int, default=None, help="Approx number of bars.")
+    p_dl.add_argument(
+        "--full-history",
+        action="store_true",
+        help="Backfill multi-year history from exchange start (slow; ignores cached cap).",
+    )
     p_dl.add_argument("--force", action="store_true", help="Ignore cache.")
     p_dl.set_defaults(func=cmd_download)
 
