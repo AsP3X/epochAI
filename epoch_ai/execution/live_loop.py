@@ -24,8 +24,7 @@ from epoch_ai.logging_system.multi_horizon_log import (
 )
 from epoch_ai.logging_system.schemas import PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
-from epoch_ai.models.base import BaseModel
-from epoch_ai.models.evolved_nn_model import EvolvedNNModel
+from epoch_ai.models.base import BaseModel, MultiHeadModel
 from epoch_ai.models.factory import build_model
 from epoch_ai.services.types import build_multi_horizon_from_structured
 from epoch_ai.utils.logging import get_logger
@@ -133,19 +132,29 @@ def run_bar_loop(
         _resolve_pending_outcomes(ctx, pos, close)
         ts = data.index[pos]
         price = float(close.loc[ts])
-        raw_pred = float(ctx.model.predict(data[feature_cols].iloc[[pos]])[0])
+        # Sequence backends (TCN) need a trailing lookback window; the target bar is the
+        # last row of the slice, so we read predictions/structured arrays at ``soffset``.
+        seq_lb = getattr(ctx.model, "sequence_lookback", None)
+        if seq_lb:
+            win_start = max(0, pos - int(seq_lb) + 1)
+            model_in = data[feature_cols].iloc[win_start : pos + 1]
+            soffset = len(model_in) - 1
+        else:
+            model_in = data[feature_cols].iloc[[pos]]
+            soffset = 0
+        raw_pred = float(ctx.model.predict(model_in)[-1])
         feat_row = data[feature_cols].iloc[pos]
         safety = ctx.safety_scorer.assess(feat_row) if ctx.safety_scorer else None
         multi = None
         if (
             config.trading.policy_backend != "threshold"
-            and isinstance(ctx.model, EvolvedNNModel)
+            and isinstance(ctx.model, MultiHeadModel)
             and ctx.model.multi_head_spec_ is not None
         ):
-            structured = ctx.model.predict_structured(data[feature_cols].iloc[[pos]])
+            structured = ctx.model.predict_structured(model_in)
             multi = build_multi_horizon_from_structured(
                 structured,
-                0,
+                soffset,
                 as_of=pd.Timestamp(ts),
                 last_close=price,
                 model_version=ctx.model_version,
@@ -193,14 +202,14 @@ def run_bar_loop(
             feature_row = {
                 k: float(v) for k, v in data[feature_cols].iloc[pos].to_dict().items()
             }
-            if isinstance(ctx.model, EvolvedNNModel) and ctx.model.multi_head_spec_ is not None:
+            if isinstance(ctx.model, MultiHeadModel) and ctx.model.multi_head_spec_ is not None:
                 # Reuse the forecast computed for the policy decision when available;
                 # only the threshold backend leaves ``multi`` unset here.
                 if multi is None:
-                    structured = ctx.model.predict_structured(data[feature_cols].iloc[[pos]])
+                    structured = ctx.model.predict_structured(model_in)
                     multi = build_multi_horizon_from_structured(
                         structured,
-                        0,
+                        soffset,
                         as_of=pd.Timestamp(ts),
                         last_close=price,
                         model_version=ctx.model_version,

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from epoch_ai.backtesting.engine import Backtester
 from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.learning.progressive import ProgressiveLearningEngine
 from epoch_ai.logging_system.store import PredictionStore
-
-import pytest
 
 pytestmark = pytest.mark.slow
 
@@ -29,6 +29,35 @@ def test_progressive_run(market, small_config):
         result.step_history.columns
     )
     assert {"test_label_rate", "mean_prediction"}.issubset(result.step_history.columns)
+
+
+def test_progressive_run_tcn(market, small_config, tmp_path):
+    """Walk-forward runs end-to-end with the sequence (TCN) backend + structured logging."""
+    pytest.importorskip("torch")
+    cfg = small_config
+    cfg.model.backend = "tcn"
+    cfg.model.val_fraction = 0.2
+    cfg.model.calibration = "none"
+    cfg.model.refit_full_after_es = False
+    cfg.model.tcn.lookback = 16
+    cfg.model.tcn.channels = [16, 16]
+    cfg.model.tcn.max_epochs = 12
+    cfg.model.tcn.patience = 3
+    cfg.model.tcn.compute_importance = False
+    cfg.prediction.horizons = [4, 8]
+    cfg.prediction.horizon = 8
+    cfg.walk_forward.retrain_frequency = 1
+
+    features = FeaturePipeline(cfg).transform(market)
+    store = PredictionStore(str(tmp_path / "tcn.sqlite"))
+    result = ProgressiveLearningEngine(cfg).run(market, features, store=store)
+
+    assert not result.predictions.empty
+    assert result.predictions["prediction"].between(0, 1).all()
+    assert {"oos_accuracy", "oos_logloss"}.issubset(result.step_history.columns)
+    # Sequence backend exercised the lookback-context + structured logging path.
+    assert store.counts()["predictions"] > 0
+    store.close()
 
 
 def test_embargo_purges_label_overlap(market, small_config):

@@ -41,8 +41,7 @@ from epoch_ai.learning.step_metrics import (
     regression_step_metrics,
 )
 from epoch_ai.learning.weighting import recency_weights
-from epoch_ai.models.base import BaseModel
-from epoch_ai.models.evolved_nn_model import EvolvedNNModel
+from epoch_ai.models.base import BaseModel, MultiHeadModel
 from epoch_ai.models.factory import build_model
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.utils.logging import get_logger
@@ -153,7 +152,7 @@ def _evaluate(
 ) -> dict[str, float]:
     """Score ``model`` on the holdout with the task-appropriate OOS metrics."""
     if (
-        isinstance(model, EvolvedNNModel)
+        isinstance(model, MultiHeadModel)
         and model.multi_head_spec_ is not None
         and multi_eval is not None
     ):
@@ -251,7 +250,7 @@ def auto_retrain_and_promote(
 
     challenger = build_model(config.model, task=config.prediction.task)
     multi_train = data.loc[x_train.index, multi_cols] if multi_cols else None
-    if isinstance(challenger, EvolvedNNModel) and multi_train is not None:
+    if isinstance(challenger, MultiHeadModel) and multi_train is not None:
         challenger.fit(
             x_train,
             y_train,

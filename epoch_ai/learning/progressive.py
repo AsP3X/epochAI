@@ -47,10 +47,8 @@ from epoch_ai.learning.weighting import recency_weights
 from epoch_ai.logging_system.multi_horizon_log import log_immediate_outcomes
 from epoch_ai.logging_system.schemas import OutcomeLog, PredictionLog
 from epoch_ai.logging_system.store import PredictionStore
-from epoch_ai.models.base import BaseModel
-from epoch_ai.models.evolved_nn_model import EvolvedNNModel
+from epoch_ai.models.base import BaseModel, MultiHeadModel
 from epoch_ai.models.factory import build_model
-from epoch_ai.models.nn_genome import NNGenome
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.services.types import build_multi_horizon_from_structured
 from epoch_ai.utils.logging import get_logger
@@ -119,6 +117,20 @@ class ProgressiveLearningEngine:
         self.registry = ModelRegistry(config.model.model_dir) if register_models else None
 
     # ------------------------------------------------------------------- helpers
+    @staticmethod
+    def _trim_structured(
+        structured: dict[int, dict[str, np.ndarray | float]], trim: int
+    ) -> dict[int, dict[str, np.ndarray | float]]:
+        """Drop the leading ``trim`` lookback-context rows from structured predictions."""
+        if not trim:
+            return structured
+        out: dict[int, dict[str, np.ndarray | float]] = {}
+        for h, block in structured.items():
+            out[h] = {
+                k: (v[trim:] if isinstance(v, np.ndarray) else v) for k, v in block.items()
+            }
+        return out
+
     def _sample_weights(self, n: int) -> np.ndarray | None:
         """Recency-decayed sample weights for the current training set."""
         # Agent: CALLS recency_weights; CAUSAL weights depend only on row age (oldest-first).
@@ -309,22 +321,24 @@ class ProgressiveLearningEngine:
                 x_train = x_all.iloc[train_start:train_end]
                 y_train = y_all.iloc[train_start:train_end]
                 weights = self._sample_weights(len(x_train))
-                # Human: warm-start evolved_nn from the prior champion genome/weights.
-                # Agent: READS model.genome_/state_dict_; only for EvolvedNNModel retrain.
-                seed_genome: NNGenome | None = None
-                seed_state: dict[str, object] | None = None
-                if isinstance(model, EvolvedNNModel) and model.genome_ is not None:
-                    seed_genome = model.genome_
-                    seed_state = model.state_dict_
+                # Human: warm-start torch backends from the prior champion's weights.
+                # Agent: READS prior model.seed_payload(); empty for non-multi-head models.
+                seed_kwargs: dict = (
+                    model.seed_payload() if isinstance(model, MultiHeadModel) else {}
+                )
                 test_end = min(cutoff + wf.step_size, n)
                 is_final_retrain = test_end >= n or (
                     wf.max_steps is not None and step_idx + 1 >= wf.max_steps
                 )
-                compute_importance = (
-                    self.config.model.nn.compute_importance and is_final_retrain
+                model_cfg_nn = self.config.model
+                importance_flag = (
+                    model_cfg_nn.tcn.compute_importance
+                    if model_cfg_nn.backend == "tcn"
+                    else model_cfg_nn.nn.compute_importance
                 )
+                compute_importance = importance_flag and is_final_retrain
                 model = build_model(self.config.model, task=self.config.prediction.task)
-                if isinstance(model, EvolvedNNModel):
+                if isinstance(model, MultiHeadModel):
                     multi_train = data.loc[
                         x_train.index,
                         [c for c in data.columns if c.startswith(("ret_", "target_"))],
@@ -334,10 +348,9 @@ class ProgressiveLearningEngine:
                         y_train,
                         sample_weight=weights,
                         compute_importance=compute_importance,
-                        seed_genome=seed_genome,
-                        seed_state=seed_state,
                         prediction=self.config.prediction,
                         multi_targets=multi_train,
+                        **seed_kwargs,
                     )
                 else:
                     model.fit(x_train, y_train, sample_weight=weights)
@@ -376,13 +389,25 @@ class ProgressiveLearningEngine:
 
             test_end = min(cutoff + wf.step_size, n)
             x_test = x_all.iloc[cutoff:test_end]
-            preds = model.predict(x_test)
+            # Sequence backends (TCN) need a lookback context tail; feed the preceding
+            # L-1 rows then trim them from the outputs so results align with x_test.
+            seq_lb = getattr(model, "sequence_lookback", None)
+            if seq_lb:
+                ctx_start = max(0, cutoff - (seq_lb - 1))
+                x_model_in = x_all.iloc[ctx_start:test_end]
+                seq_trim = cutoff - ctx_start
+            else:
+                x_model_in = x_test
+                seq_trim = 0
+            preds = model.predict(x_model_in)
+            if seq_trim:
+                preds = preds[seq_trim:]
             is_classification = self.config.prediction.task == "classification"
             multi_head = (
-                isinstance(model, EvolvedNNModel) and model.multi_head_spec_ is not None
+                isinstance(model, MultiHeadModel) and model.multi_head_spec_ is not None
             )
             structured_batch = (
-                model.predict_structured(x_test)
+                self._trim_structured(model.predict_structured(x_model_in), seq_trim)
                 if store is not None and multi_head
                 else None
             )
@@ -439,7 +464,7 @@ class ProgressiveLearningEngine:
                     feature_dict = {
                         k: float(v) for k, v in x_test.iloc[offset].to_dict().items()
                     }
-                    if structured_batch is not None and isinstance(model, EvolvedNNModel):
+                    if structured_batch is not None and isinstance(model, MultiHeadModel):
                         spec = model.multi_head_spec_
                         assert spec is not None
                         multi = build_multi_horizon_from_structured(
@@ -534,10 +559,12 @@ class ProgressiveLearningEngine:
                         )
                     )
                     if (
-                        isinstance(model, EvolvedNNModel)
+                        isinstance(model, MultiHeadModel)
                         and model.multi_head_spec_ is not None
                     ):
-                        structured = model.predict_structured(x_test)
+                        structured = self._trim_structured(
+                            model.predict_structured(x_model_in), seq_trim
+                        )
                         horizons = model.multi_head_spec_.horizons
                         labels_by_h = {
                             h: data[f"target_{h}"].iloc[cutoff:test_end].to_numpy(dtype=float)

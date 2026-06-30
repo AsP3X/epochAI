@@ -16,7 +16,7 @@ from epoch_ai.models.base import BaseModel
 from epoch_ai.models.lightgbm_model import LightGBMModel
 
 #: Supported backend identifiers (also stored in registry metadata).
-BACKENDS = ("evolved_nn", "lightgbm", "xgboost")
+BACKENDS = ("evolved_nn", "tcn", "lightgbm", "xgboost")
 
 
 def model_class(backend: str) -> type[BaseModel]:
@@ -34,6 +34,17 @@ def model_class(backend: str) -> type[BaseModel]:
                 "model.backend='lightgbm'."
             ) from exc
         return EvolvedNNModel
+    if backend == "tcn":
+        try:
+            from epoch_ai.models.tcn_model import TCNModel
+        except ImportError as exc:  # pragma: no cover - exercised only without torch
+            raise ImportError(
+                "model.backend='tcn' requires PyTorch. "
+                "Install with `pip install torch` (or "
+                "`pip install -r requirements-optional.txt`), or set "
+                "model.backend='lightgbm'."
+            ) from exc
+        return TCNModel
     if backend == "xgboost":
         try:
             from epoch_ai.models.xgboost_model import XGBoostModel

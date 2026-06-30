@@ -18,7 +18,7 @@ from epoch_ai.learning.adaptation import resolved_holdout_bars
 from epoch_ai.learning.policy_promotion import replay_metrics
 from epoch_ai.learning.promotion import _evaluate
 from epoch_ai.learning.step_metrics import multi_horizon_classification_step_metrics
-from epoch_ai.models.evolved_nn_model import EvolvedNNModel
+from epoch_ai.models.base import MultiHeadModel
 from epoch_ai.models.registry import ModelRegistry
 
 
@@ -55,7 +55,7 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
     registry = ModelRegistry(config.model.model_dir)
     try:
         model, _ = registry.load(None, config.model, task=config.prediction.task)
-        if isinstance(model, EvolvedNNModel) and model.multi_head_spec_ is not None:
+        if isinstance(model, MultiHeadModel) and model.multi_head_spec_ is not None:
             structured = model.predict_structured(data[features.columns])
             horizons = model.multi_head_spec_.horizons
             labels_by_h = {h: data[f"target_{h}"].to_numpy(dtype=float) for h in horizons}

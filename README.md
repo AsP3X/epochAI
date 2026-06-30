@@ -20,9 +20,10 @@ operating closer to real-time.
 
 - **Progressive historical learning engine** — expanding/rolling walk-forward with
   configurable retraining frequency and recency weighting (enabled by default).
-- **Calibrated, class-balanced model** — default **evolved_nn** (evolutionary PyTorch MLP
-  on causal features) with balanced class weighting and post-hoc probability
-  calibration (isotonic/Platt); **LightGBM** / **XGBoost** remain optional backends.
+- **Calibrated, class-balanced model** — default **tcn** (causal Temporal Convolutional
+  Network over a sliding window of causal features) with balanced class weighting and
+  post-hoc probability calibration (isotonic/Platt); **evolved_nn** (PyTorch MLP),
+  **LightGBM** and **XGBoost** remain selectable backends.
 - **Honest, horizon-aware evaluation** — per-step OOS metrics include logloss,
   Brier, ROC-AUC and execution-threshold-aware accuracy; the backtest holds each
   signal for the full prediction horizon (`backtest.horizon_aware`).
@@ -155,7 +156,7 @@ requires real exchange data** (`pip install ccxt` + `download`); synthetic fallb
 disabled for `train`/`retrain` (tests/CI only).
 
 Optional: `pip install -r requirements-optional.txt` for PyTorch
-(`evolved_nn` default backend), GPU backends (`xgboost`), MLflow, etc.
+(`tcn` default backend + `evolved_nn`), GPU backends (`xgboost`), MLflow, etc.
 
 ### 2. Configure (optional)
 
@@ -542,7 +543,7 @@ prediction:
   neutral_band: 0.0            # >0 drops near-zero moves so labels reflect decisive moves
 
 model:
-  backend: lightgbm            # lightgbm (default) | xgboost (optional CUDA-GPU backend)
+  backend: tcn                 # tcn (default, temporal) | evolved_nn | lightgbm | xgboost
   val_fraction: 0.15           # time-ordered tail for early stopping + calibration
   class_weight: balanced       # derive scale_pos_weight from label balance (or "none")
   calibration: isotonic        # post-hoc P(up) calibration: isotonic | sigmoid | none
@@ -570,10 +571,13 @@ backtest:
 **Model backends & GPU acceleration (optional).** The learner is pluggable via
 `model.backend`:
 
-- **`evolved_nn`** (default) — PyTorch MLP on engineered features (`fast_fit` deep fixed
-  arch in shipped config). Requires `pip install torch`. Training requires **real**
-  exchange or provenanced parquet (`train` disables synthetic fallback). Tune with
-  `model.nn.*`; set `model.evolution.fast_fit=false` only for research evolution runs.
+- **`tcn`** (default) — causal Temporal Convolutional Network over a sliding window of the
+  last `model.tcn.lookback` engineered feature rows (shipped: 96 bars = 8h on a 5m base).
+  Dilated residual conv blocks learn temporal structure directly while staying causal
+  (bar *t* sees only rows ≤ *t*). Requires `pip install torch`. Tune with `model.tcn.*`.
+- **`evolved_nn`** — PyTorch MLP on engineered features (`fast_fit` deep fixed arch).
+  Requires `pip install torch`. Tune with `model.nn.*`; set
+  `model.evolution.fast_fit=false` only for research evolution runs.
 - **`lightgbm`** — fast CPU GBM training. `model.device=gpu` uses LightGBM's OpenCL
   backend (requires a GPU-enabled LightGBM build).
 - **`xgboost`** (optional, `pip install xgboost`) — ships prebuilt **CUDA wheels**, so
@@ -585,8 +589,9 @@ backtest:
 Either way, a GPU request that the installed build/host cannot satisfy logs a warning
 and **automatically falls back to CPU**, so models can always be trained. Pin a device
 on multi-GPU hosts with `gpu_device_id` (and `gpu_platform_id` for LightGBM OpenCL).
-Both backends store **open weights** in the registry (`model.txt` for LightGBM,
-`model.json` for XGBoost) and share the same calibration/early-stopping behaviour.
+All backends store **open weights** in the registry (`model.pt` for tcn/evolved_nn,
+`model.txt` for LightGBM, `model.json` for XGBoost) and share the same
+calibration/early-stopping behaviour.
 
 ```bash
 pip install xgboost                                  # one-time

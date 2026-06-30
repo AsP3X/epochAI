@@ -16,9 +16,9 @@ from epoch_ai.learning.checkpoint import (
     validate_checkpoint,
 )
 from epoch_ai.learning.progressive import ProgressiveLearningEngine
+from epoch_ai.models.registry import ModelRegistry
 
 pytestmark = pytest.mark.slow
-from epoch_ai.models.registry import ModelRegistry
 
 
 def test_checkpoint_round_trip(tmp_path, small_config):

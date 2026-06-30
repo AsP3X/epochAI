@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from epoch_ai.backtesting.engine import Backtester
 from epoch_ai.features.pipeline import FeaturePipeline
-
-import pytest
 
 pytestmark = pytest.mark.slow
 

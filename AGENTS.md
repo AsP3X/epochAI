@@ -80,11 +80,17 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
 - `epoch_ai/features` — modular, causal feature groups (incl. **cross-asset ETH/SOL** vs BTC: price, funding spreads, OI, liquidations),
   optional **patterns** / **manipulation** proxies, sentiment + on-chain) with config-driven look-back windows.
 - `epoch_ai/execution` — risk manager + paper trader; optional **SafetyScorer** gate (`safety.enabled`).
-- `epoch_ai/models` — pluggable GBM backends behind one interface, built via
-  `factory.build_model` (chosen by `model.backend`): **evolved_nn** (default, evolutionary
-  PyTorch MLP in `model.pt` + genome/scaler sidecars), **LightGBM** (`model.txt`), and
-  optional **XGBoost** (`model.json`, lazy-imported; real CUDA-GPU training on NVIDIA
-  cards via `model.device=auto` or `cuda`). **evolved_nn** parallelizes evolution
+- `epoch_ai/models` — pluggable backends behind one interface, built via
+  `factory.build_model` (chosen by `model.backend`): **tcn** (default, causal Temporal
+  Convolutional Network in `model.pt` + `.tcn.json`/scaler sidecars; consumes a sliding
+  window of the last `model.tcn.lookback` feature rows and learns temporal structure
+  causally), **evolved_nn** (evolutionary PyTorch MLP in `model.pt` + genome/scaler
+  sidecars), **LightGBM** (`model.txt`), and optional **XGBoost** (`model.json`,
+  lazy-imported; real CUDA-GPU training on NVIDIA cards via `model.device=auto` or
+  `cuda`). **tcn** and **evolved_nn** share the `MultiHeadModel` base (per-horizon
+  direction logit + return quantiles), multi-head losses, and probability calibration;
+  the progressive engine feeds sequence backends a lookback-context tail at prediction
+  time (via `sequence_lookback`). **evolved_nn** parallelizes evolution
   candidates (`model.evolution.parallel_candidates`), caches device tensors across
   genomes, warm-starts retrains from the prior champion genome, gates permutation
   importance to the final walk-forward fit (`model.nn.compute_importance`), and uses
@@ -92,7 +98,7 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
   `model.evolution.cuda_worker_*` (parallel workers by VRAM tier), `model.nn.cuda_*`
   (auto batch), and `model.cuda` (TF32/cudnn). Lower caps for weak GPUs via YAML or
   `--set`. Default walk-forward
-  `retrain_frequency` is **5** for evolved_nn (1 for GBM backends). Both GBM backends share balanced class weighting +
+  `retrain_frequency` is **5** for tcn/evolved_nn (1 for GBM backends). All backends share balanced class weighting +
   post-hoc probability calibration (`calibration.py`); the calibration sidecar travels
   with the bundle. GPU requests auto-fall back to CPU when the build/host can't satisfy
   them. The registry is backend-aware (metadata stores `backend`/`model_file`) and also
@@ -147,7 +153,7 @@ and **ask** — not commit or push on their own.
   `xgboost`, `vectorbt`, `mlflow`, `river`, `pandas_ta` live in
   `requirements-optional.txt` (vectorbt/numba can be fragile on Python 3.12). All are
   lazy-imported with graceful fallbacks, so the core pipeline runs without them. Install
-  on demand only. `torch` is required for `model.backend=evolved_nn`; `xgboost` is only
+  on demand only. `torch` is required for `model.backend=tcn` or `evolved_nn`; `xgboost` is only
   needed for `model.backend=xgboost` (CUDA-GPU training); tests for optional backends
   `pytest.importorskip` when absent.
 - **Artifacts are gitignored** under `artifacts/` (parquet data cache, model registry,

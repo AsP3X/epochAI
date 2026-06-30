@@ -1,12 +1,12 @@
 # =============================================================================
 # epoch_ai - example configuration
 # =============================================================================
-# BTC/USDT perpetual futures, 1-minute candles, multi-horizon prediction
-# (immediate/1m through 1hr). Adding more pairs extends the `symbols` list.
+# BTC/USDT perpetual futures, 5-minute candles, multi-horizon prediction
+# (5m through 4h). Adding more pairs extends the `symbols` list.
 
 symbols:
   - "BTC/USDT"
-timeframe: "1m"
+timeframe: "5m"
 
 # -----------------------------------------------------------------------------
 # Data: maximise historical depth. BTC/USDT perp on Binance USDT-M starts ~2019-11.
@@ -62,16 +62,17 @@ features:
   vol_windows: [6, 12, 24, 48, 96, 192]
 
 # -----------------------------------------------------------------------------
-# Multi-horizon prediction: direction + quantile return bands at 1m/5m/10m/15m/30m/1hr.
-# `horizon` is the primary head (1hr); purge/embargo defaults to max(horizons)=60.
+# Multi-horizon prediction on a 5m base: direction + quantile return bands at
+# 5m/15m/30m/1h/2h/4h. `horizon` is the primary head (1h = 12 x 5m candles);
+# purge/embargo defaults to max(horizons)=48.
 # -----------------------------------------------------------------------------
 prediction:
-  horizon: 60                  # primary head = 1hr (60 x 1m candles)
-  horizons: [1, 5, 10, 15, 30, 60]
+  horizon: 12                  # primary head = 1h (12 x 5m candles)
+  horizons: [1, 3, 6, 12, 24, 48]   # 5m, 15m, 30m, 1h, 2h, 4h
   quantiles: [0.1, 0.5, 0.9]
   task: "classification"
   threshold: 0.0
-  neutral_band: 0.0001         # drop near-flat moves at 1m scale
+  neutral_band: 0.0005         # drop near-flat moves at 5m scale (moves are larger than 1m)
 
 # -----------------------------------------------------------------------------
 # Gradient-boosting model. Backend is pluggable:
@@ -81,7 +82,7 @@ prediction:
 # -----------------------------------------------------------------------------
 model:
   model_dir: "artifacts/models"
-  backend: evolved_nn           # evolved_nn (default) | lightgbm | xgboost
+  backend: tcn                  # tcn (temporal) | evolved_nn | lightgbm | xgboost
   evolution:
     enabled: true
     population_size: 12
@@ -148,7 +149,25 @@ model:
     compute_importance: true       # permutation importance on final walk-forward fit only
     mixed_precision: true          # torch.autocast on CUDA (disable on very old GPUs if unstable)
     torch_compile: false           # off by default: little gain with fast_fit; avoids dynamo noise
-  # CUDA runtime (evolved_nn on GPU only; ignored on CPU)
+  # ---------------------------------------------------------------------------
+  # Temporal Convolutional Network (only when backend: tcn). The TCN consumes a
+  # sliding window of the last `lookback` engineered feature rows and learns
+  # temporal structure directly (causal: bar t sees only rows <= t). Each block
+  # uses dilation 2**i, so the receptive field grows exponentially with depth.
+  # ---------------------------------------------------------------------------
+  tcn:
+    lookback: 96                 # past bars per input window (96 x 5m = 8h)
+    channels: [64, 64, 128, 128]  # output channels per dilated residual block
+    kernel_size: 3
+    dropout: 0.1
+    max_epochs: 120
+    batch_size: 256              # raise on GPUs with spare VRAM for throughput
+    patience: 12                 # early-stopping patience on val loss
+    learning_rate: 0.001
+    weight_decay: 0.00001
+    compute_importance: true     # permutation importance on the final walk-forward fit only
+    mixed_precision: true        # torch.autocast on CUDA
+  # CUDA runtime (evolved_nn / tcn on GPU only; ignored on CPU)
   cuda:
     allow_tf32: true               # Ampere+ matmul speedup
     cudnn_benchmark: true
@@ -184,12 +203,12 @@ model:
 # outcomes + context, retrain, and march forward through all of history.
 # -----------------------------------------------------------------------------
 walk_forward:
-  initial_train_period: 43200  # ~30 days of 1m bars before first OOS prediction
-  step_size: 1440              # ~1 day per walk-forward step
-  retrain_frequency: 5         # evolved_nn: 5 balances cost; use 1 to retrain every step
+  initial_train_period: 8640   # ~30 days of 5m bars before first OOS prediction
+  step_size: 288               # ~1 day per walk-forward step (288 x 5m)
+  retrain_frequency: 5         # tcn/evolved_nn: 5 balances cost; use 1 to retrain every step
   expanding: true              # expanding window = full accumulated history
-  recency_half_life: 75000     # decay sample weights so recent regimes matter more
-  embargo: null                # purge gap (null = prediction.max_horizon=60; 0 = off)
+  recency_half_life: 15000     # decay sample weights so recent regimes matter more
+  embargo: null                # purge gap (null = prediction.max_horizon=48; 0 = off)
   max_steps: null              # cap iterations for quick demos (null = full run)
   checkpoint_enabled: true     # save progress each step; `train --resume` continues
   checkpoint_path: null        # null = artifacts/checkpoints/walk_forward_<symbol>.json
@@ -200,14 +219,14 @@ walk_forward:
 # only repoint the live model when the challenger improves the metric.
 # -----------------------------------------------------------------------------
 promotion:
-  eval_bars: 30000             # ~21 days of 1m bars held out for challenger vs champion
+  eval_bars: 6048              # ~21 days of 5m bars held out for challenger vs champion
   metric: oos_brier_weighted  # conf-weighted per-horizon Brier (multi-head); oos_logloss|oos_brier|...
   min_improvement: 0.0         # required sign-aware improvement over champion (must be strictly positive; a tie never promotes)
 
 # Post-initial coarse auto-retrain + action-log feedback (schedule-retrain --promote).
 adaptation:
   enabled: true
-  coarse_step_size: 4320       # ~3 days at 1m (larger than initial walk_forward.step_size)
+  coarse_step_size: 864        # ~3 days at 5m (larger than initial walk_forward.step_size)
   coarse_retrain_frequency: 1
   schedule_interval_hours: 24  # daily default for schedule-retrain
   holdout_bars: null           # null => promotion.eval_bars (never train on this tail)
@@ -247,7 +266,7 @@ trading:
   reliability_floor: 0.35
   max_position_fraction: 1.0
   max_drawdown_kill: 0.20
-  max_hold_bars: 1440          # ~1 day at 1m
+  max_hold_bars: 288           # ~1 day at 5m
   funding_rate_per_bar: 0.0
   trade_frequency: selective    # selective|active
   decision_horizons: []         # empty => all prediction.horizons
@@ -295,7 +314,7 @@ execution:
   metrics_enabled: true
   calibration_min_accuracy: null  # e.g. 0.52 to block trades when OOS accuracy drops
   calibration_min_samples: 30
-  min_buffer_bars: 7500         # ~5 days of 1m warmup for live/replay
+  min_buffer_bars: 1500         # ~5 days of 5m warmup for live/replay (>= lookback + max_horizon + feature warmup)
 
 api:
   host: "127.0.0.1"

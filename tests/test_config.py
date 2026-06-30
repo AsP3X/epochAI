@@ -187,6 +187,33 @@ def test_cuda_performance_defaults():
     assert cuda.matmul_precision == "high"
 
 
+def test_tcn_config_defaults():
+    tcn = AppConfig().model.tcn
+    assert tcn.lookback >= 4
+    assert tcn.channels and all(c > 0 for c in tcn.channels)
+    assert tcn.kernel_size >= 2
+    assert 0.0 <= tcn.dropout < 1.0
+    assert tcn.max_epochs >= 5
+
+
+def test_tcn_backend_accepted():
+    config = AppConfig.model_validate({"model": {"backend": "tcn"}})
+    assert config.model.backend == "tcn"
+
+
+def test_tcn_empty_channels_rejected():
+    from epoch_ai.config.settings import TCNConfig
+
+    with pytest.raises(ValueError, match="channels"):
+        TCNConfig.model_validate({"channels": []})
+
+
+def test_tcn_backend_sets_slower_retrain_cadence():
+    # tcn (like evolved_nn) defaults walk-forward retrain_frequency to 5 unless overridden.
+    config = AppConfig.model_validate({"model": {"backend": "tcn"}})
+    assert config.walk_forward.retrain_frequency == 5
+
+
 def test_cuda_matmul_precision_rejects_unknown():
     from epoch_ai.config.settings import CudaPerformanceConfig
 
@@ -244,7 +271,10 @@ def test_invalid_backend_rejected():
 
 
 def test_shipped_config_yaml_backend():
-    assert load_config("config/config.yaml").model.backend == "evolved_nn"
+    config = load_config("config/config.yaml")
+    assert config.model.backend == "tcn"
+    assert config.model.tcn.lookback == 96
+    assert config.model.tcn.channels == [64, 64, 128, 128]
 
 
 def test_promotion_defaults():
@@ -276,13 +306,13 @@ def test_invalid_val_fraction_rejected():
 def test_shipped_config_yaml_loads():
     """The example config must resolve with the new keys."""
     config = load_config("config/config.yaml")
-    assert config.timeframe == "1m"
+    assert config.timeframe == "5m"
     assert config.model.calibration == "isotonic"
-    assert config.walk_forward.recency_half_life == 75000
-    assert config.prediction.horizon == 60
-    assert config.prediction.horizons == [1, 5, 10, 15, 30, 60]
+    assert config.walk_forward.recency_half_life == 15000
+    assert config.prediction.horizon == 12
+    assert config.prediction.horizons == [1, 3, 6, 12, 24, 48]
     assert config.prediction.quantiles == [0.1, 0.5, 0.9]
-    assert config.prediction.neutral_band == 0.0001
+    assert config.prediction.neutral_band == 0.0005
     assert "ETH/USDT" in config.data.context_symbols
     assert "SOL/USDT" in config.data.context_symbols
     assert "BNB/USDT" in config.data.context_symbols

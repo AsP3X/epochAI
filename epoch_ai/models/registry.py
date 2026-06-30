@@ -301,6 +301,8 @@ class ModelRegistry:
         sidecars = [model_file, f"{model_file}.calibration.json", "metadata.json"]
         if backend == "evolved_nn":
             sidecars.extend([f"{model_file}.genome.json", f"{model_file}.scaler.json"])
+        elif backend == "tcn":
+            sidecars.extend([f"{model_file}.tcn.json", f"{model_file}.scaler.json"])
         for name in sidecars:
             src_file = src / name
             if src_file.exists():
@@ -309,6 +311,7 @@ class ModelRegistry:
         fmt = {
             "xgboost": "XGBoost JSON booster",
             "evolved_nn": "PyTorch state_dict",
+            "tcn": "PyTorch state_dict",
         }.get(backend, "LightGBM text booster")
         loader = "epoch_ai.models.registry.ModelRegistry(...).load(label, cfg.model)"
         readme = out / "README.txt"

@@ -18,8 +18,7 @@ from epoch_ai.execution.live_loop import LiveLoopResult, run_bar_loop
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 from epoch_ai.logging_system.store import PredictionStore
-from epoch_ai.models.base import BaseModel
-from epoch_ai.models.evolved_nn_model import EvolvedNNModel
+from epoch_ai.models.base import BaseModel, MultiHeadModel
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.services.types import (
     HorizonForecast,
@@ -84,6 +83,19 @@ class RuntimeService:
         assert self._model is not None
         return self._model
 
+    @staticmethod
+    def _model_input_frame(model: BaseModel, features: pd.DataFrame) -> pd.DataFrame:
+        """Feature rows to feed ``model`` for the latest-bar prediction.
+
+        Sequence backends (TCN) need the trailing ``sequence_lookback`` rows so the final
+        bar has a complete causal window; dense models only need the last row. Callers
+        index the model output with ``[-1]`` to read the latest bar either way.
+        """
+        seq_lb = getattr(model, "sequence_lookback", None)
+        if seq_lb:
+            return features.iloc[-int(seq_lb):]
+        return features.iloc[[-1]]
+
     def predict_market(self, market: pd.DataFrame) -> PredictionResult:
         """Predict on the **latest** bar of a OHLCV frame."""
         if market.empty:
@@ -99,15 +111,15 @@ class RuntimeService:
             )
         model = self._require_model()
         ts = market.index[-1]
-        row = features.iloc[[-1]]
-        raw = float(model.predict(row)[0])
+        frame = self._model_input_frame(model, features)
+        raw = float(model.predict(frame)[-1])
         decision = self.risk.decide(raw)
         return PredictionResult(
             timestamp=str(ts),
             raw_prediction=raw,
             decision=decision,
             model_version=self._model_version or "unknown",
-            features={k: float(v) for k, v in row.iloc[0].items()},
+            features={k: float(v) for k, v in features.iloc[-1].items()},
         )
 
     def predict_multi_horizon(self, market: pd.DataFrame) -> MultiHorizonPredictionResult:
@@ -124,13 +136,13 @@ class RuntimeService:
         model = self._require_model()
         ts = pd.Timestamp(market.index[-1])
         last_close = float(market["close"].iloc[-1])
-        row = features.iloc[[-1]]
+        frame = self._model_input_frame(model, features)
         bar_minutes = timeframe_to_minutes(self.config.timeframe)
         pred_cfg = self.config.prediction
         forecasts: list[HorizonForecast] = []
 
-        if isinstance(model, EvolvedNNModel) and model.multi_head_spec_ is not None:
-            structured = model.predict_structured(row)
+        if isinstance(model, MultiHeadModel) and model.multi_head_spec_ is not None:
+            structured = model.predict_structured(frame)
             for h in pred_cfg.horizons:
                 block = structured[h]
                 forecasts.append(
@@ -140,14 +152,14 @@ class RuntimeService:
                         horizon=h,
                         horizon_label=pred_cfg.horizon_label(h),
                         bar_minutes=bar_minutes,
-                        p_up=float(block["p_up"][0]),
-                        q10=float(block["q10"][0]),
-                        q50=float(block["q50"][0]),
-                        q90=float(block["q90"][0]),
+                        p_up=float(block["p_up"][-1]),
+                        q10=float(block["q10"][-1]),
+                        q50=float(block["q50"][-1]),
+                        q90=float(block["q90"][-1]),
                     )
                 )
         else:
-            raw = float(model.predict(row)[0])
+            raw = float(model.predict(frame)[-1])
             primary = pred_cfg.horizon
             forecasts.append(
                 build_horizon_forecast(

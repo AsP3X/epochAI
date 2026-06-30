@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from epoch_ai.config.settings import ModelConfig, PredictionConfig
-from epoch_ai.models.base import BaseModel
+from epoch_ai.models.base import MultiHeadModel
 from epoch_ai.models.calibration import (
     MultiHeadCalibrator,
     ProbabilityCalibrator,
@@ -51,11 +51,13 @@ GENOME_SUFFIX = ".genome.json"
 SCALER_SUFFIX = ".scaler.json"
 
 
-class EvolvedNNModel(BaseModel):
+class EvolvedNNModel(MultiHeadModel):
     """MLP classifier/regressor with evolutionary architecture search."""
 
     BACKEND = "evolved_nn"
     MODEL_FILENAME = "model.pt"
+    #: Dense per-row model: no sequence context required.
+    sequence_lookback = None
 
     def __init__(self, config: ModelConfig, task: str = "classification") -> None:
         self.config = config
@@ -609,6 +611,12 @@ class EvolvedNNModel(BaseModel):
         if self.feature_names_ is None:
             raise RuntimeError("Model is not trained.")
         return pd.Series(0.0, index=self.feature_names_, name="permutation")
+
+    def seed_payload(self) -> dict:
+        """Warm-start the next retrain from this champion's genome + weights."""
+        if self.genome_ is None:
+            return {}
+        return {"seed_genome": self.genome_, "seed_state": self.state_dict_}
 
 
 def _require_torch():

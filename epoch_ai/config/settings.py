@@ -516,6 +516,67 @@ class NNConfig(BaseModel):
         return self
 
 
+class TCNConfig(BaseModel):
+    """Dilated causal Temporal Convolutional Network settings (``tcn`` backend).
+
+    The TCN consumes a sliding window of the last ``lookback`` engineered feature rows
+    (scaled) and learns temporal structure directly, rather than relying on hand-built
+    lag features. Windows are built causally (a bar at time ``t`` sees only rows
+    ``<= t``), so walk-forward integrity is preserved.
+    """
+
+    lookback: int = Field(
+        default=96,
+        ge=4,
+        le=2048,
+        description=(
+            "Number of past bars (inclusive of the current bar) fed to the TCN as the "
+            "input sequence window. 96 bars = 8h on a 5m base."
+        ),
+    )
+    channels: list[int] = Field(
+        default_factory=lambda: [64, 64, 128, 128],
+        description=(
+            "Output channels per dilated residual block (length = number of blocks). "
+            "Block i uses dilation 2**i, so receptive field grows exponentially."
+        ),
+    )
+    kernel_size: int = Field(
+        default=3,
+        ge=2,
+        le=16,
+        description="Convolution kernel width within each temporal block.",
+    )
+    dropout: float = Field(
+        default=0.1,
+        ge=0.0,
+        lt=1.0,
+        description="Dropout applied inside each temporal block.",
+    )
+    max_epochs: int = Field(default=120, ge=5)
+    batch_size: int = Field(default=256, ge=8)
+    patience: int = Field(default=12, ge=1, description="Early-stopping patience on val loss.")
+    learning_rate: float = Field(default=1e-3, gt=0.0)
+    weight_decay: float = Field(default=1e-5, ge=0.0)
+    compute_importance: bool = Field(
+        default=True,
+        description=(
+            "When true, permutation importance runs on the final walk-forward fit only "
+            "(skipped on intermediate retrains for speed)."
+        ),
+    )
+    mixed_precision: bool = Field(
+        default=True,
+        description="Use torch.autocast on CUDA during TCN training.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_channels(self) -> TCNConfig:
+        if not self.channels or any(int(c) < 1 for c in self.channels):
+            raise ValueError("model.tcn.channels must be a non-empty list of positive ints.")
+        return self
+
+
 class ModelConfig(BaseModel):
     """Model hyper-parameters, calibration and model-registry location.
 
@@ -548,12 +609,16 @@ class ModelConfig(BaseModel):
     """
 
     model_dir: str = "artifacts/models"
-    backend: Literal["evolved_nn", "lightgbm", "xgboost"] = Field(
+    backend: Literal["evolved_nn", "tcn", "lightgbm", "xgboost"] = Field(
         default="evolved_nn",
-        description="Prediction backend; evolved_nn uses evolutionary PyTorch MLP.",
+        description=(
+            "Prediction backend; evolved_nn uses an evolutionary PyTorch MLP, tcn a "
+            "causal Temporal Convolutional Network over feature windows."
+        ),
     )
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     nn: NNConfig = Field(default_factory=NNConfig)
+    tcn: TCNConfig = Field(default_factory=TCNConfig)
     cuda: CudaPerformanceConfig = Field(default_factory=CudaPerformanceConfig)
     num_boost_round: int = 300
     early_stopping_rounds: int | None = 30
@@ -1013,10 +1078,13 @@ class AppConfig(BaseModel):
                 "walk_forward.initial_train_period must exceed the embargo gap "
                 f"({resolved_embargo}); otherwise the first training window is empty."
             )
-        # Human: evolved_nn retrains are costly; default walk-forward cadence is slower
-        #        than LightGBM unless the user explicitly configured walk_forward.
+        # Human: evolved_nn and tcn retrains are costly; default walk-forward cadence is
+        #        slower than LightGBM unless the user explicitly configured walk_forward.
         # Agent: MUTATES retrain_frequency=5; ONLY when walk_forward not in fields_set.
-        if self.model.backend == "evolved_nn" and "walk_forward" not in self.model_fields_set:
+        if (
+            self.model.backend in ("evolved_nn", "tcn")
+            and "walk_forward" not in self.model_fields_set
+        ):
             self.walk_forward.retrain_frequency = 5
         return self
 

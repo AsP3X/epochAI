@@ -18,13 +18,13 @@ On Windows, use `.venv\Scripts\Activate.ps1` and replace `\` line continuation w
 
 ## What you are building
 
-epochAI learns **out-of-sample** on historical 1-minute BTC/USDT data, predicts six
-horizons (1m → 1h) with calibrated P(up) and quantile bands, and feeds a separate
+epochAI learns **out-of-sample** on historical 5-minute BTC/USDT data, predicts six
+horizons (5m → 4h) with calibrated P(up) and quantile bands, and feeds a separate
 **execution layer** that turns forecasts into paper trades.
 
 ```mermaid
 flowchart LR
-  DL[download full history] --> TR[train fast_fit deep MLP] --> REG[(artifacts/models)]
+  DL[download full history] --> TR[train TCN temporal model] --> REG[(artifacts/models)]
   REG --> EH[evaluate-holdout] --> RUN[predict / run] --> LOG[(SQLite + action_log)]
   LOG --> RT[auto-retrain] --> REG
 ```
@@ -38,19 +38,21 @@ predict → run → auto-retrain.**
 
 Production defaults in `config/config.yaml` (2026-06):
 
-- **`evolution.fast_fit=true`** — one deep fixed MLP per retrain (no evolution loop)
-- **`nn.fixed_hidden_sizes=[512,384,256,128,64]`** — 5-layer network
-- **`nn.torch_compile=false`**, **`nn.cuda_batch_cap=4096`**, **`use_synthetic_fallback=false`**
+- **`timeframe=5m`** — 5-minute base bars; horizons `[1,3,6,12,24,48]` (5m → 4h), primary 1h
+- **`model.backend=tcn`** — causal Temporal Convolutional Network over a sliding window
+  of the last **`tcn.lookback=96`** feature rows (8h); learns temporal structure directly
+- **`tcn.channels=[64,64,128,128]`**, **`use_synthetic_fallback=false`**
 
 | Profile | Use when | Train command extras |
 | --- | --- | --- |
 | **CPU** | No NVIDIA GPU | `--set model.device=cpu` |
-| **GPU low** | 4–8 GB VRAM (T4, 3060) | `--set model.device=cuda` + lower batch/worker caps below |
+| **GPU low** | 4–8 GB VRAM (T4, 3060) | `--set model.device=cuda` + lower `tcn.batch_size` |
 | **GPU high** | 16–48 GB VRAM (3090, 4090, A6000) | `--set model.device=cuda` (defaults are already tuned) |
 
-Optional alternative backend for large tabular history:
+Alternative backends (dense MLP or tabular GBM):
 
 ```bash
+python -m epoch_ai train --fresh --set model.backend=evolved_nn --set model.device=cuda
 python -m epoch_ai train --fresh --set model.backend=xgboost --set model.device=cuda
 ```
 
@@ -92,7 +94,7 @@ caches.
 python -m epoch_ai download --full-history
 ```
 
-First run can take a long time (multi-year 1m BTC + context symbols). Re-runs extend the
+First run can take a long time (multi-year 5m BTC + context symbols). Re-runs extend the
 cache forward from the last timestamp.
 
 ### Legacy cache / “no provenance” error
@@ -106,11 +108,11 @@ python -m epoch_ai download --full-history --force
 ### Capped run (smoke or limited RAM)
 
 ```bash
-python -m epoch_ai download --bars 87000
+python -m epoch_ai download --bars 20000
 ```
 
-Why 87000? Default 1m config uses `initial_train_period=43200` (~30 days); feature warm-up
-and label filtering drop roughly half the raw rows. **~87,000 bars** is the practical
+Why 20000? Default 5m config uses `initial_train_period=8640` (~30 days); feature warm-up
+and label filtering drop a large fraction of raw rows. **~20,000 bars** is the practical
 minimum for a default-config train.
 
 | Flag | Purpose |
@@ -157,9 +159,8 @@ python -m epoch_ai train --fresh --set model.device=cuda
 
 ```bash
 python -m epoch_ai train --set model.device=cuda \
-  --set model.nn.cuda_batch_cap=512 \
-  --set model.nn.batch_size=128 \
-  --set model.nn.fixed_hidden_sizes=[256,128,64]
+  --set model.tcn.batch_size=128 \
+  --set model.tcn.channels=[32,32,64]
 ```
 
 ### CPU
@@ -211,10 +212,10 @@ Models land in `artifacts/models/v_*/`; checkpoints in `artifacts/checkpoints/`.
 
 | Knob | Shipped default | GPU low override |
 | --- | --- | --- |
-| `model.evolution.fast_fit` | `true` | `true` |
-| `model.nn.fixed_hidden_sizes` | `[512,384,256,128,64]` | `[256,128,64]` |
-| `model.nn.cuda_batch_cap` | `4096` | `512` |
-| `model.nn.torch_compile` | `false` | `false` |
+| `model.backend` | `tcn` | `tcn` |
+| `model.tcn.lookback` | `96` | `96` |
+| `model.tcn.channels` | `[64,64,128,128]` | `[32,32,64]` |
+| `model.tcn.batch_size` | `256` | `128` |
 | `model.device` | `auto` | `cuda` |
 | `data.use_synthetic_fallback` | `false` | `false` |
 | `walk_forward.retrain_frequency` | `5` | `5` |
