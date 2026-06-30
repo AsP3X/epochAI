@@ -163,13 +163,14 @@ def test_extends_cache_instead_of_redownloading(tmp_path):
     assert last_ms < int(df.index[200].timestamp() * 1000)
 
 
-def test_extends_forward_when_cache_reaches_exchange_earliest(tmp_path):
-    """A live cache at the exchange's earliest candle must extend, not re-backfill.
+def test_live_cache_at_exchange_earliest_skips_download(tmp_path):
+    """A live cache that already reaches the exchange's earliest candle is complete.
 
     Regression: with an ``earliest`` start that resolves earlier than the exchange's
-    first available candle, the cache can never reach the configured start date, so the
-    downloader used to re-download the entire history every run. It must instead detect
-    that the cache already holds all available history and only fetch new bars.
+    first available candle, the cache can never reach the configured start date. The
+    downloader used to treat that as "incomplete" and re-extend (re-fetch + re-attach
+    funding/OI + re-save) on *every* run. A current cache at the exchange floor must be
+    returned as-is without any download.
     """
     config = AppConfig.model_validate(
         {
@@ -181,6 +182,43 @@ def test_extends_forward_when_cache_reaches_exchange_earliest(tmp_path):
     )
     downloader = HistoricalDownloader(config)
     cached = _ohlcv_frame(2000, live=True)  # begins long after the 2017 fallback start
+    cache_path = downloader._cache_path(config.primary_symbol)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cached.to_parquet(cache_path)
+
+    with patch.object(
+        HistoricalDownloader,
+        "_exchange_earliest_ts",
+        lambda self, sym: cached.index.min(),
+    ):
+        with patch.object(
+            HistoricalDownloader,
+            "_download_ccxt",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not download")),
+        ):
+            with patch.object(downloader, "_default_bar_count", return_value=10_000_000):
+                df = downloader.load_or_download(n_bars=None)
+
+    assert len(df) == 2000  # full cache returned, untouched
+
+
+def test_extends_forward_when_cache_reaches_exchange_earliest(tmp_path):
+    """A *stale* cache at the exchange floor extends forward, never re-backfills.
+
+    When the cache reaches the exchange's earliest candle but has fallen behind the
+    present, the downloader must fetch only the missing tail (passing the cached frame
+    as a base) rather than re-downloading the entire history from scratch.
+    """
+    config = AppConfig.model_validate(
+        {
+            "data": {
+                "data_dir": str(tmp_path / "data"),
+                "historical_start_date": "earliest",
+            }
+        }
+    )
+    downloader = HistoricalDownloader(config)
+    cached = _ohlcv_frame(2000, live=False)  # begins after 2017 fallback, ends in the past
     cache_path = downloader._cache_path(config.primary_symbol)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cached.to_parquet(cache_path)
@@ -206,6 +244,43 @@ def test_extends_forward_when_cache_reaches_exchange_earliest(tmp_path):
                 df = downloader.load_or_download(n_bars=None)
 
     assert len(df) == 2003  # original cache + 3 freshly fetched bars
+
+
+def test_context_window_reuses_late_listed_cache(tmp_path):
+    """A context symbol that listed after the primary must not re-download every run.
+
+    The cached context history starts later than the primary window (the symbol listed
+    afterwards) but reaches the exchange's earliest candle and is current. Enrichment
+    must reuse the cached slice instead of re-fetching the whole window.
+    """
+    config = AppConfig.model_validate({"data": {"data_dir": str(tmp_path / "data")}})
+    downloader = HistoricalDownloader(config)
+    # Primary window stretches back before the context symbol's first candle.
+    window_start = pd.Timestamp("2019-09-08 18:00:00", tz="UTC")
+    window_end = pd.Timestamp.now(tz="UTC").floor("15min")
+    # Context cache begins well after the window start but is live to the present.
+    cached = _ohlcv_frame(3000, live=True)
+    cache_path = downloader._cache_path("ETH/USDT")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cached.to_parquet(cache_path)
+
+    with patch.object(
+        HistoricalDownloader,
+        "_exchange_earliest_ts",
+        lambda self, sym: cached.index.min(),
+    ):
+        with patch.object(
+            HistoricalDownloader,
+            "_download_ccxt",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must reuse cache")),
+        ):
+            out = downloader.load_or_download(
+                "ETH/USDT",
+                align_index=pd.date_range(window_start, window_end, freq="15min", tz="UTC"),
+                skip_enrichment=True,
+            )
+    assert out is not None and not out.empty
+    assert len(out) == 3000
 
 
 def test_window_fetch_skips_when_listing_after_window(tmp_path, monkeypatch):

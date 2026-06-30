@@ -136,12 +136,12 @@ class HistoricalDownloader:
         if cache.exists() and not force:
             cached = pd.read_parquet(cache)
             if n_bars is None and not full_history:
-                target_default = self._default_bar_count()
-                if (
-                    len(cached) >= target_default
-                    and self._cache_is_live(cached)
-                    and self._cache_covers_start(cached, symbol)
-                ):
+                # A live cache that already reaches as far back as the exchange offers is
+                # complete; return it without re-fetching. Do NOT gate on a raw bar-count
+                # target: an ``earliest`` start over-estimates available bars (it assumes
+                # data back to the fallback date), so a count gate would never be met and
+                # the downloader would needlessly re-extend on every run.
+                if self._cache_is_live(cached) and self._cache_covers_start(cached, symbol):
                     logger.info("Loaded %d cached bars for %s from %s", len(cached), symbol, cache)
                     return self._finalize_load(
                         self._tail(cached, n_bars),
@@ -221,7 +221,9 @@ class HistoricalDownloader:
         if cache.exists() and not force:
             cached = pd.read_parquet(cache)
 
-        if cached is not None and self._cache_covers_window(cached, window_start, window_end):
+        if cached is not None and self._cache_covers_window(
+            cached, window_start, window_end, symbol
+        ):
             out = cached.loc[cached.index <= window_end].copy()
             logger.info(
                 "Loaded cached %s for primary window (%s -> %s, %d bars)",
@@ -242,10 +244,21 @@ class HistoricalDownloader:
             )
 
         target_bars = self._bars_in_window(window_start, window_end)
+        # When the cache already reaches the window start (or the exchange's earliest
+        # candle for late-listed context symbols), only fetch the missing tail instead of
+        # re-downloading the entire window to top up a few recent bars.
+        fetch_start = window_start
+        if (
+            cached is not None
+            and not cached.empty
+            and self._window_start_covered(cached, window_start, symbol)
+        ):
+            tf = pd.Timedelta(minutes=timeframe_to_minutes(self.config.timeframe))
+            fetch_start = max(window_start, cached.index.max() + tf)
         fetched, fetch_source = self._download(
             symbol,
             target_bars,
-            since_ts=window_start,
+            since_ts=fetch_start,
             until_ts=window_end,
         )
         fetched = align_and_clean(fetched, self.config.timeframe)
@@ -255,15 +268,44 @@ class HistoricalDownloader:
         out = merged.loc[merged.index <= window_end].copy()
         return self._finalize_load(out, symbol, skip_enrichment=skip_enrichment)
 
-    @staticmethod
+    def _window_start_covered(
+        self, cached: pd.DataFrame, window_start: pd.Timestamp, symbol: str
+    ) -> bool:
+        """True when the cache begins early enough to cover the window start.
+
+        Accepts a cache that starts at/before ``window_start`` or — for a symbol that
+        listed after the window start — one that reaches the exchange's earliest available
+        candle. Without the earliest-aware branch a late-listed context symbol (e.g. ETH
+        or SOL perps, which list after BTC) could never satisfy the start check and would
+        be fully re-downloaded on every enrichment pass.
+        """
+        if cached.empty:
+            return False
+        tf = pd.Timedelta(minutes=timeframe_to_minutes(self.config.timeframe))
+        if cached.index.min() <= window_start + tf * 2:
+            return True
+        earliest = self._exchange_earliest_ts(symbol)
+        return earliest is not None and cached.index.min() <= earliest + tf * 2
+
     def _cache_covers_window(
+        self,
         cached: pd.DataFrame,
         window_start: pd.Timestamp,
         window_end: pd.Timestamp,
+        symbol: str,
     ) -> bool:
+        """True when cached context data spans the primary window.
+
+        End coverage accepts a cache that reaches the window end or is otherwise live:
+        context is forward-filled onto the primary grid, so a current cache a few bars
+        behind the primary still covers the join causally and need not be re-fetched.
+        """
         if cached.empty:
             return False
-        return cached.index.min() <= window_start and cached.index.max() >= window_end
+        if not self._window_start_covered(cached, window_start, symbol):
+            return False
+        tf = pd.Timedelta(minutes=timeframe_to_minutes(self.config.timeframe))
+        return cached.index.max() >= window_end - tf * 2 or self._cache_is_live(cached)
 
     @staticmethod
     def _merge_cached(
