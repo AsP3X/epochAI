@@ -91,19 +91,65 @@ Copy-paste commands below. Run them in order the first time, then repeat
 
 ### 1. Install dependencies
 
+**Requires Python 3.12+** (`pyproject.toml`). Check what you have:
+
 ```bash
-python3 -m venv .venv
+python3 --version
+# or, if installed separately:
+python3.12 --version
+```
+
+If the version is below 3.12, install Python 3.12 first (Linux):
+
+```bash
+# Ubuntu 24.04+ / Debian (python3.12 in default repos)
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv python3.12-dev build-essential
+
+# Ubuntu 22.04 (deadsnakes PPA)
+sudo apt update
+sudo apt install -y software-properties-common
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv python3.12-dev build-essential
+
+# Ubuntu 20.04 (focal) — EOL; deadsnakes no longer publishes packages.
+# Use pyenv to build 3.12 from source:
+sudo apt update
+sudo apt install -y make build-essential libssl-dev zlib1g-dev libbz2-dev \
+  libreadline-dev libsqlite3-dev curl git libncursesw5-dev xz-utils tk-dev \
+  libffi-dev liblzma-dev
+curl -fsSL https://pyenv.run | bash
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+pyenv install 3.12
+pyenv global 3.12
+python --version   # Python 3.12.x
+```
+
+Add the three `export`/`eval` lines to `~/.bashrc` so pyenv persists in new shells.
+
+macOS: `brew install python@3.12`
+
+Use `python3.12` for the virtualenv when your default `python3` is still older:
+
+```bash
+python3.12 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
+python -m pip install -U pip
 pip install -r requirements.txt
 pip install -r requirements-dev.txt   # ruff + pytest (for development)
 ```
+
+If `python3` is already 3.12+, `python3 -m venv .venv` is fine instead of `python3.12`.
 
 On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`. CCXT is
 optional; with `data.use_synthetic_fallback: true` the pipeline runs fully offline when
 the exchange is unreachable.
 
-Optional: `pip install -r requirements-optional.txt` for live CCXT downloads, GPU
-backends (`xgboost`), MLflow, etc.
+Optional: `pip install -r requirements-optional.txt` for live CCXT downloads, PyTorch
+(`evolved_nn` default backend), GPU backends (`xgboost`), MLflow, etc.
 
 ### 2. Configure (optional)
 
