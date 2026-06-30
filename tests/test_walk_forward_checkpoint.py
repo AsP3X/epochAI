@@ -269,6 +269,8 @@ def test_train_interrupt_message(tmp_path, small_config, capsys):
                 no_register=False,
                 no_resume=False,
                 fresh=False,
+                full_history=False,
+                refresh_data=False,
             )
         )
     finally:

@@ -126,13 +126,11 @@ def count_resolved_rows(config: AppConfig, n_bars: int | None = None) -> tuple[i
     Never hits the exchange — use ``download`` first if cache is missing or too small.
     """
     from epoch_ai.data.downloader import HistoricalDownloader
+    from epoch_ai.data.training_policy import config_for_supervised_training
     from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
     from epoch_ai.services.training import resolve_training_bars
 
-    cfg = config
-    if cfg.model.backend == "evolved_nn" and cfg.data.use_synthetic_fallback:
-        cfg = cfg.model_copy(deep=True)
-        cfg.data.use_synthetic_fallback = False
+    cfg = config_for_supervised_training(config)
 
     n_bars = resolve_training_bars(cfg, n_bars, full_history=False)
     market = HistoricalDownloader(cfg).load_or_download(

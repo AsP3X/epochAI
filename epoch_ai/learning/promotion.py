@@ -28,6 +28,7 @@ import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
+from epoch_ai.data.training_policy import assert_training_cache_real, config_for_supervised_training
 from epoch_ai.features.pipeline import (
     FeaturePipeline,
     build_multi_horizon_targets,
@@ -197,12 +198,14 @@ def auto_retrain_and_promote(
         An :class:`AutoPromoteResult` describing the cycle (skipped when there is not
         enough data to form an honest train/holdout split).
     """
+    config = config_for_supervised_training(config)
     metric = config.promotion.metric
     horizon = config.prediction.horizon
     wf = config.walk_forward
     embargo = config.prediction.resolved_embargo(wf.embargo)
 
     market = HistoricalDownloader(config).load_or_download(config.primary_symbol, n_bars=n_bars)
+    assert_training_cache_real(config, config.primary_symbol)
     features = FeaturePipeline(config).transform(market)
     y = build_target(market, config.prediction)
     fwd = forward_return(market, horizon)

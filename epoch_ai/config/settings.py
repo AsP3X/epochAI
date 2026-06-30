@@ -27,10 +27,11 @@ class DataConfig(BaseModel):
             candle the exchange offers (true full history). The downloader walks
             forward from here to maximise historical depth.
         data_dir: Directory where raw/aligned parquet datasets are stored.
-        use_synthetic_fallback: When ``True`` (default) the downloader generates a
-            realistic synthetic dataset if the exchange is unreachable, guaranteeing
-            the pipeline is runnable fully offline.
-        synthetic_seed: RNG seed for reproducible synthetic data.
+        use_synthetic_fallback: When ``True``, the downloader may generate a synthetic
+            dataset if the exchange is unreachable (offline demos and tests only).
+            Supervised training always disables this regardless of the YAML value.
+            Default ``False`` — production training requires real exchange or provenanced cache.
+        synthetic_seed: RNG seed for reproducible synthetic data (tests/demos only).
         rate_limit_ms: Politeness delay between paginated REST requests.
     """
 
@@ -38,7 +39,7 @@ class DataConfig(BaseModel):
     market_type: Literal["spot", "future"] = "future"
     historical_start_date: str = "2019-11-01"
     data_dir: str = "artifacts/data"
-    use_synthetic_fallback: bool = True
+    use_synthetic_fallback: bool = False
     synthetic_seed: int = 7
     rate_limit_ms: int = 250
     context_symbols: list[str] = Field(

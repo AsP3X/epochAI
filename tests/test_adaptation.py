@@ -116,6 +116,6 @@ def test_retrain_with_action_log_smoke(small_config, tmp_path):
     )
     small_config.trading.action_log_path = str(log_path)
 
-    result = run_retrain(small_config, min_new_samples=999, register=True, n_bars=2000)
+    result = run_retrain(small_config, min_new_samples=999, register=True, n_bars=4000)
     assert not result.skipped
     assert result.train_rows > 0

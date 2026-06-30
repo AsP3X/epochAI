@@ -20,7 +20,7 @@ def test_training_service_train(small_config, tmp_path):
     small_config.model.model_dir = str(tmp_path / "models")
     small_config.data.data_dir = str(tmp_path / "data")
     service = TrainingService(small_config)
-    result = service.train(n_bars=2000, max_steps=2, register=True)
+    result = service.train(n_bars=2500, max_steps=2, register=True)
     assert result.model_version is not None
     assert result.walk_forward_steps >= 1
     assert len(service.list_models()) >= 1
@@ -31,7 +31,7 @@ def test_runtime_service_predict_and_run(market, small_config, tmp_path):
     small_config.data.data_dir = str(tmp_path / "data")
 
     train = TrainingService(small_config)
-    train.train(n_bars=2000, max_steps=2, register=True)
+    train.train(n_bars=2500, max_steps=2, register=True)
 
     runtime = RuntimeService(small_config)
     pred = runtime.predict_market(market)
@@ -43,7 +43,7 @@ def test_runtime_service_predict_and_run(market, small_config, tmp_path):
     assert len(multi.horizons) >= 1
     assert multi.to_json()["model_version"].startswith("v_")
 
-    result = runtime.run_session(n_bars=2000, live_bars=200, retrain_every=0)
+    result = runtime.run_session(n_bars=2500, live_bars=200, retrain_every=0)
     assert result.bars_processed > 0
 
 
@@ -57,15 +57,25 @@ def test_runtime_session_log_predictions(market, small_config, tmp_path, monkeyp
     small_config.features.sentiment = False
     small_config.logging.db_path = str(tmp_path / "logs" / "predictions.sqlite")
 
-    def fake_load(self, symbol=None, *, n_bars=None, force=False, skip_enrichment=False):
+    def fake_load(
+        self,
+        symbol=None,
+        *,
+        n_bars=None,
+        align_index=None,
+        force=False,
+        fetch_if_missing=True,
+        skip_enrichment=False,
+    ):
+        del symbol, align_index, force, fetch_if_missing, skip_enrichment
         cap = len(market) if n_bars is None else min(n_bars, len(market))
         return market.iloc[:cap].copy()
 
     monkeypatch.setattr(HistoricalDownloader, "load_or_download", fake_load)
 
-    TrainingService(small_config).train(n_bars=2000, max_steps=2, register=True)
+    TrainingService(small_config).train(n_bars=2500, max_steps=2, register=True)
     runtime = RuntimeService(small_config)
-    runtime.run_session(n_bars=2000, live_bars=200, log_predictions=True)
+    runtime.run_session(n_bars=2500, live_bars=200, log_predictions=True)
 
     store = PredictionStore(small_config.logging.db_path)
     try:
@@ -88,7 +98,7 @@ def test_runtime_requires_trained_model(small_config, tmp_path):
 def test_registry_load(small_config, tmp_path):
     small_config.model.model_dir = str(tmp_path / "models")
     small_config.data.data_dir = str(tmp_path / "data")
-    TrainingService(small_config).train(n_bars=2000, max_steps=1, register=True)
+    TrainingService(small_config).train(n_bars=2500, max_steps=1, register=True)
 
     registry = ModelRegistry(small_config.model.model_dir)
     versions = registry.list_versions()
@@ -102,7 +112,7 @@ def test_registry_load(small_config, tmp_path):
 def test_registry_export_open_bundle(small_config, tmp_path):
     small_config.model.model_dir = str(tmp_path / "models")
     small_config.data.data_dir = str(tmp_path / "data")
-    TrainingService(small_config).train(n_bars=2000, max_steps=1, register=True)
+    TrainingService(small_config).train(n_bars=2500, max_steps=1, register=True)
 
     registry = ModelRegistry(small_config.model.model_dir)
     bundle = registry.export_open_bundle(tmp_path / "release")

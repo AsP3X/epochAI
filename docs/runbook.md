@@ -1,6 +1,7 @@
 # epochAI Operator Runbook
 
-This runbook covers day-to-day operations for training, running, monitoring, and exporting models.
+This runbook covers day-to-day operations for training, running, monitoring, and exporting
+models. For a first-time walkthrough see **`docs/get-started.md`**.
 
 ## Prerequisites
 
@@ -12,8 +13,12 @@ pip install -r requirements-optional.txt
 
 ## Train a model
 
+**Requires real exchange data** (provenanced parquet). Download first:
+
 ```bash
-python -m epoch_ai train --bars 5000 --log-predictions
+python -m epoch_ai download --full-history
+python -m epoch_ai train --set model.device=cuda
+python -m epoch_ai evaluate-holdout
 ```
 
 Models are versioned under `artifacts/models/v_*`. Long runs **auto-save a resume
@@ -26,13 +31,13 @@ checkpoint** after each walk-forward step and **prune** older versions (default:
 2. Resume with the same command — no flags needed:
 
    ```bash
-   python -m epoch_ai train --log-predictions
+   python -m epoch_ai train --set model.device=cuda
    ```
 
 3. Restart from step 0:
 
    ```bash
-   python -m epoch_ai train --fresh --log-predictions
+   python -m epoch_ai train --fresh --set model.device=cuda
    ```
 
 Checkpoint file (default): `artifacts/checkpoints/walk_forward_BTC-USDT.json`.
@@ -41,7 +46,7 @@ Checkpoint file (default): `artifacts/checkpoints/walk_forward_BTC-USDT.json`.
 
 ```bash
 python -m epoch_ai checkpoint seed --last-step 75
-python -m epoch_ai train --log-predictions
+python -m epoch_ai train --set model.device=cuda
 ```
 
 Use `config/config.yaml` (or the same `--config` / `--set` overrides as `train`) when
@@ -163,7 +168,9 @@ When `execution.calibration_min_accuracy` is set, live rebalancing is blocked if
   `config/config.yaml` as `train`, or run `train --fresh`.
 - **Warmup not complete** — increase `--bars` or lower `execution.min_buffer_bars`.
 - **Kill switch active** — run `kill-switch resume` or delete `artifacts/kill_switch.json`.
-- **CCXT geo-block** — synthetic fallback is used automatically when `data.use_synthetic_fallback: true`.
+- **No provenance / synthetic cache rejected** — `python -m epoch_ai download --full-history --force`
+- **CCXT geo-block** — `train` fails without real data; use `backtest` with
+  `--set data.use_synthetic_fallback=true` for offline CI smokes only.
 
 ## CI / release
 

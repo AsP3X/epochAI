@@ -8,6 +8,7 @@ import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
+from epoch_ai.data.training_policy import assert_training_cache_real, config_for_supervised_training
 from epoch_ai.execution.action_log import boost_weights_from_action_log, load_frame
 from epoch_ai.features.pipeline import FeaturePipeline, build_target
 from epoch_ai.learning.adaptation import trim_training_rows
@@ -42,7 +43,7 @@ def run_retrain(
 
     Priority:
     1. Joined prediction/outcome rows from :class:`PredictionStore` when enough exist.
-    2. Otherwise fall back to a fresh fit on downloaded/synthetic parquet history.
+    2. Otherwise fall back to a fresh fit on cached real exchange parquet history.
 
     Args:
         config: Application configuration.
@@ -53,6 +54,7 @@ def run_retrain(
     Returns:
         A :class:`RetrainResult` describing the run.
     """
+    config = config_for_supervised_training(config)
     store = PredictionStore(config.logging.db_path)
     timestamps: pd.Index | pd.Series | None = None
     try:
@@ -73,6 +75,7 @@ def run_retrain(
         else:
             downloader = HistoricalDownloader(config)
             market = downloader.load_or_download(config.primary_symbol, n_bars=n_bars)
+            assert_training_cache_real(config, config.primary_symbol)
             features = FeaturePipeline(config).transform(market)
             y = build_target(market, config.prediction)
             data = features.join(y).dropna(subset=["target"])

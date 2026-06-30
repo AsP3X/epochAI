@@ -16,6 +16,7 @@ from epoch_ai.backtesting.engine import Backtester, BacktestResult
 from epoch_ai.config.overrides import apply_overrides
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
+from epoch_ai.data.training_policy import assert_training_cache_real, config_for_supervised_training
 from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.learning.progressive import ProgressiveLearningEngine
 from epoch_ai.learning.promotion import AutoPromoteResult, auto_retrain_and_promote
@@ -53,7 +54,6 @@ def resolve_training_bars(
     if n_bars is not None or full_history:
         return n_bars
 
-    min_bars = minimum_training_bars(config)
     downloader = HistoricalDownloader(config)
     cache_path = downloader._cache_path(config.primary_symbol)
     if not cache_path.exists():
@@ -104,26 +104,22 @@ class TrainingService:
     ) -> pd.DataFrame:
         """Fetch OHLCV history and cache as parquet.
 
-        When ``model.backend`` is ``evolved_nn``, synthetic fallback is disabled so
-        training always uses real exchange or cached real parquet data.
+        Supervised training always disables synthetic fallback and requires a
+        provenanced exchange cache (see ``epoch_ai.data.training_policy``).
         """
         cfg = self._training_data_config()
-        return HistoricalDownloader(cfg).load_or_download(
+        market = HistoricalDownloader(cfg).load_or_download(
             cfg.primary_symbol,
             n_bars=n_bars,
             force=force,
             fetch_if_missing=fetch_if_missing,
         )
+        assert_training_cache_real(cfg, cfg.primary_symbol)
+        return market
 
     def _training_data_config(self) -> AppConfig:
-        """Return config with real-data guarantees for evolved_nn training."""
-        cfg = self.config
-        if cfg.model.backend != "evolved_nn":
-            return cfg
-        if cfg.data.use_synthetic_fallback:
-            cfg = cfg.model_copy(deep=True)
-            cfg.data.use_synthetic_fallback = False
-        return cfg
+        """Return config with real-data guarantees for all training backends."""
+        return config_for_supervised_training(self.config)
 
     def train(
         self,

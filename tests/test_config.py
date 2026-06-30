@@ -13,6 +13,7 @@ def test_defaults_are_valid():
     config = AppConfig()
     assert config.primary_symbol == "BTC/USDT"
     assert config.prediction.horizon >= 1
+    assert config.data.use_synthetic_fallback is False
 
 
 def test_load_from_yaml(tmp_path):
@@ -295,6 +296,11 @@ def test_shipped_config_yaml_loads():
     assert config.features.onchain is True
     assert config.risk.long_threshold == 0.58
     assert config.risk.short_threshold == 0.42
+    assert config.data.use_synthetic_fallback is False
+    assert config.model.evolution.fast_fit is True
+    assert config.model.nn.fixed_hidden_sizes == [512, 384, 256, 128, 64]
+    assert config.model.nn.torch_compile is False
+    assert config.model.nn.cuda_batch_cap == 4096
 
 
 def test_data_enrichment_defaults():

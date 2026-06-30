@@ -44,6 +44,8 @@ Future Telegram/website interfaces must call these services — see
 
 ## New CLI commands
 
+- **Getting started:** `docs/get-started.md` — install, real-data download, GPU profiles, cheat sheet.
+
 | Command | Purpose |
 | --- | --- |
 | `train` | Train AI + register model (primary training entry); auto-resumes from checkpoint |
@@ -98,9 +100,11 @@ See `.cursor/commands/` for copy-paste smoke workflows (`run-tests`, `backtest-s
   writes a walk-forward **checkpoint** after each step (`artifacts/checkpoints/`) and
   **prunes** old `v_*` dirs to `model.retain_versions` (default 10), keeping the
   champion and checkpoint model. Construct models via `build_model`, never by importing
-  a concrete class, so `model.backend` is honoured everywhere. **Real data:** `evolved_nn`
-  training disables synthetic fallback; cached real parquet is used when live CCXT
-  extension fails.
+  a concrete class, so `model.backend` is honoured everywhere. **Real data:** all
+  supervised training (`train`, `retrain`, `auto-retrain`, promotion) disables synthetic
+  fallback and requires exchange provenance on parquet caches (`*.provenance.json`).
+  Re-download with `python -m epoch_ai download --full-history --force` if legacy cache lacks
+  provenance.
 - `epoch_ai/logging_system` — SQLite prediction/outcome store + dataset joiner.
 - `epoch_ai/learning` — the progressive walk-forward engine (core component);
  `step_metrics.py` (OOS logloss/Brier/AUC/threshold-aware) + `weighting.py`

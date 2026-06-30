@@ -13,15 +13,15 @@ timeframe: "1m"
 # Set historical_start_date to "earliest" to auto-fetch from the exchange's very
 # first available candle (true full history). For pre-2019 BTC history, switch
 # exchange to "binance" + market_type "spot" (BTC/USDT spot lists from 2017-08).
-# If the exchange is unreachable (e.g. geo-blocked), a realistic synthetic dataset
-# is generated so the full pipeline runs offline.
+# If the exchange is unreachable, download fails unless use_synthetic_fallback is true
+# (tests/demos only). Training always requires real exchange data + provenanced cache.
 # -----------------------------------------------------------------------------
 data:
   exchange: "binanceusdm"
   market_type: "future"
   historical_start_date: "earliest"   # ISO date (e.g. "2019-11-01") or "earliest"
   data_dir: "artifacts/data"
-  use_synthetic_fallback: false
+  use_synthetic_fallback: false       # never for production train; tests may override
   synthetic_seed: 7
   rate_limit_ms: 250
   context_symbols:
@@ -89,8 +89,8 @@ model:
     elite_fraction: 0.25
     mutation_sigma: 0.2
     seed: 42
-    fast_fit: false             # true for quick tests / smokes (skips evolution)
-    parallel_candidates: true     # train population concurrently
+    fast_fit: true              # production: one deep net per retrain (no evolution loop)
+    parallel_candidates: true     # train population concurrently (when fast_fit=false)
   # Parallel evolution workers (CUDA). Pin exactly with max_workers; otherwise auto tiers apply.
     max_workers: null             # null = auto from VRAM tiers below (clipped by cuda_worker_cap_max)
     cuda_auto_workers: true       # false => cuda_worker_cap_fallback (sequential-style cap)
@@ -133,21 +133,21 @@ model:
   #     --set model.nn.fixed_hidden_sizes=[512,384,256,128]
   # ---------------------------------------------------------------------------
   nn:
-    min_layers: 1               # floor for evolutionary depth (pair with max_layers for deeper nets)
-    max_layers: 3               # ceiling (up to 12); e.g. min_layers: 4, max_layers: 6 for deep search
-    hidden_size_min: 32
-    hidden_size_max: 512
-    fixed_hidden_sizes: null   # e.g. [256, 256, 128, 64] — seed architecture when set
+    min_layers: 4               # deep fixed architecture (with fast_fit + fixed_hidden_sizes)
+    max_layers: 6
+    hidden_size_min: 64
+    hidden_size_max: 1024
+    fixed_hidden_sizes: [512, 384, 256, 128, 64]
     max_epochs: 200
     batch_size: 256               # base batch; CUDA may scale up when cuda_auto_batch=true
     cuda_auto_batch: true         # scale batches toward cuda_batch_cap on GPU
-    cuda_batch_cap: 2048          # max auto batch (lower on weak GPUs, e.g. 512)
-    cuda_batches_per_epoch: 32    # target steps/epoch when auto-batch scales up (use 16 on big GPUs)
+    cuda_batch_cap: 4096          # max auto batch (lower on weak GPUs, e.g. 512)
+    cuda_batches_per_epoch: 16    # target steps/epoch when auto-batch scales up
     val_check_interval: 1          # validate every N epochs (1 = every epoch)
     patience: 15
     compute_importance: true       # permutation importance on final walk-forward fit only
     mixed_precision: true          # torch.autocast on CUDA (disable on very old GPUs if unstable)
-    torch_compile: true            # torch.compile candidates when PyTorch 2+ (main thread)
+    torch_compile: false           # off by default: little gain with fast_fit; avoids dynamo noise
   # CUDA runtime (evolved_nn on GPU only; ignored on CPU)
   cuda:
     allow_tf32: true               # Ampere+ matmul speedup

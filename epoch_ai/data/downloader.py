@@ -22,6 +22,12 @@ import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.cleaning import align_and_clean
+from epoch_ai.data.provenance import (
+    SOURCE_EXCHANGE,
+    SOURCE_SYNTHETIC,
+    read_data_provenance,
+    write_data_provenance,
+)
 from epoch_ai.data.synthetic import generate_synthetic_ohlcv
 from epoch_ai.utils.logging import get_logger
 from epoch_ai.utils.progress import DownloadProgressBar, estimate_parquet_bytes, format_bytes
@@ -151,7 +157,7 @@ class HistoricalDownloader:
                     target_bars,
                     cache,
                 )
-                df = self._download(symbol, target_bars, base_df=cached)
+                df, source = self._download(symbol, target_bars, base_df=cached)
             else:
                 logger.info(
                     "Backfilling %s from exchange start (cache %d bars, target %d; "
@@ -161,8 +167,9 @@ class HistoricalDownloader:
                     target_bars,
                     cache,
                 )
-                fetched = self._download(symbol, target_bars, recent_tail=False)
+                fetched, fetch_source = self._download(symbol, target_bars, recent_tail=False)
                 df = self._merge_cached(cached, fetched)
+                source = self._merged_provenance_source(cache, fetch_source)
         elif cached is not None and len(cached) > 0 and recent_tail:
             logger.info(
                 "Refreshing recent %s history (%d bars requested; cache ends %s)",
@@ -171,8 +178,9 @@ class HistoricalDownloader:
                 cached.index.max(),
             )
             try:
-                df = self._download(symbol, target_bars, recent_tail=True)
+                df, fetch_source = self._download(symbol, target_bars, recent_tail=True)
                 df = self._merge_cached(cached, df)
+                source = self._merged_provenance_source(cache, fetch_source)
             except RuntimeError:
                 logger.warning(
                     "Recent refresh failed for %s; using cached bars ending %s",
@@ -180,11 +188,11 @@ class HistoricalDownloader:
                     cached.index.max(),
                 )
                 df = cached
+                source = self._existing_provenance_source(cache)
         else:
-            df = self._download(symbol, target_bars, recent_tail=recent_tail)
+            df, source = self._download(symbol, target_bars, recent_tail=recent_tail)
         df = align_and_clean(df, self.config.timeframe)
-        df.to_parquet(cache)
-        logger.info("Saved %d bars for %s to %s", len(df), symbol, cache)
+        self._write_cache(df, cache, symbol, source)
         return self._finalize_load(self._tail(df, n_bars), symbol, skip_enrichment=skip_enrichment)
 
     def _load_for_window(
@@ -224,7 +232,7 @@ class HistoricalDownloader:
             )
 
         target_bars = self._bars_in_window(window_start, window_end)
-        fetched = self._download(
+        fetched, fetch_source = self._download(
             symbol,
             target_bars,
             since_ts=window_start,
@@ -232,8 +240,8 @@ class HistoricalDownloader:
         )
         fetched = align_and_clean(fetched, self.config.timeframe)
         merged = self._merge_cached(cached, fetched)
-        merged.to_parquet(cache)
-        logger.info("Saved %d bars for %s to %s", len(merged), symbol, cache)
+        source = self._merged_provenance_source(cache, fetch_source)
+        self._write_cache(merged, cache, symbol, source)
         out = merged.loc[merged.index <= window_end].copy()
         return self._finalize_load(out, symbol, skip_enrichment=skip_enrichment)
 
@@ -256,6 +264,36 @@ class HistoricalDownloader:
             return fetched
         combined = pd.concat([cached, fetched])
         return combined[~combined.index.duplicated(keep="last")].sort_index()
+
+    def _write_cache(
+        self,
+        df: pd.DataFrame,
+        cache: Path,
+        symbol: str,
+        source: str,
+    ) -> None:
+        df.to_parquet(cache)
+        write_data_provenance(
+            cache,
+            source=source,
+            symbol=symbol,
+            timeframe=self.config.timeframe,
+            n_bars=len(df),
+        )
+        logger.info("Saved %d bars for %s to %s (%s)", len(df), symbol, cache, source)
+
+    @staticmethod
+    def _existing_provenance_source(cache: Path) -> str:
+        meta = read_data_provenance(cache)
+        if meta is None:
+            return SOURCE_EXCHANGE
+        return str(meta.get("source", SOURCE_EXCHANGE))
+
+    @staticmethod
+    def _merged_provenance_source(cache: Path, fetch_source: str) -> str:
+        if fetch_source == SOURCE_EXCHANGE:
+            return SOURCE_EXCHANGE
+        return HistoricalDownloader._existing_provenance_source(cache)
 
     def _bars_in_window(
         self,
@@ -328,12 +366,12 @@ class HistoricalDownloader:
         since_ts: pd.Timestamp | None = None,
         until_ts: pd.Timestamp | None = None,
         recent_tail: bool = False,
-    ) -> pd.DataFrame:
+    ) -> tuple[pd.DataFrame, str]:
         """Try CCXT first; fall back to synthetic data on any failure."""
         windowed = since_ts is not None or until_ts is not None
         base_len = len(base_df) if base_df is not None else 0
         if not windowed and not recent_tail and base_len >= target_bars:
-            return base_df.iloc[:target_bars].copy()  # type: ignore[union-attr]
+            return base_df.iloc[:target_bars].copy(), SOURCE_EXCHANGE  # type: ignore[union-attr]
 
         ccxt_reason: str | None = None
         try:
@@ -346,7 +384,7 @@ class HistoricalDownloader:
                 recent_tail=recent_tail,
             )
             if df is not None and len(df) > 0:
-                return df
+                return df, SOURCE_EXCHANGE
             ccxt_reason = "CCXT returned no data"
         except Exception as exc:  # noqa: BLE001 - any failure should fall back
             ccxt_reason = f"CCXT download failed ({exc})"
@@ -361,11 +399,11 @@ class HistoricalDownloader:
                     len(base_df),
                     target_bars,
                 )
-                return base_df
+                return base_df, SOURCE_EXCHANGE
             raise RuntimeError(
                 f"No data available for {symbol} and synthetic fallback disabled ({detail}). "
-                "Install ccxt (requirements-optional.txt), enable data.use_synthetic_fallback, "
-                "or provide a cached parquet file under data.data_dir."
+                "Install ccxt (requirements-optional.txt) and download real exchange data, "
+                "or provide a provenanced parquet cache under data.data_dir."
             )
 
         if base_df is not None and len(base_df) > 0:
@@ -376,7 +414,9 @@ class HistoricalDownloader:
                 len(base_df),
                 target_bars,
             )
-            return base_df
+            return base_df, self._existing_provenance_source(
+                self._cache_path(symbol)
+            )
 
         logger.warning("%s for %s; using synthetic fallback.", ccxt_reason, symbol)
 
@@ -397,7 +437,7 @@ class HistoricalDownloader:
             len(df),
             format_bytes(estimate_parquet_bytes(len(df))),
         )
-        return df
+        return df, SOURCE_SYNTHETIC
 
     def _synthetic_seed(self, symbol: str) -> int:
         """Deterministic but distinct seed per symbol for synthetic fallback."""

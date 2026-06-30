@@ -46,7 +46,13 @@ def test_synthetic_fallback_when_ccxt_unavailable(tmp_path, monkeypatch):
     )
     df = HistoricalDownloader(config).load_or_download(n_bars=500)
     assert len(df) == 500
-    assert (tmp_path / "data" / "BTC-USDT_15m.parquet").exists()
+    cache = tmp_path / "data" / "BTC-USDT_15m.parquet"
+    assert cache.exists()
+    from epoch_ai.data.provenance import read_data_provenance
+
+    meta = read_data_provenance(cache)
+    assert meta is not None
+    assert meta["source"] == "synthetic"
 
 
 def test_synthetic_fallback_disabled_raises_without_cache(tmp_path, monkeypatch):

@@ -4,33 +4,23 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 import pandas as pd
+import pytest
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.services.training import TrainingService, minimum_training_bars, resolve_training_bars
 
 
-def test_evolved_nn_disables_synthetic_fallback_in_download_config():
-    cfg = AppConfig.model_validate(
-        {
-            "data": {"use_synthetic_fallback": True},
-            "model": {"backend": "evolved_nn"},
-        }
-    )
-    resolved = TrainingService(cfg)._training_data_config()
-    assert resolved.data.use_synthetic_fallback is False
-
-
-def test_lightgbm_keeps_synthetic_fallback_setting():
-    cfg = AppConfig.model_validate(
-        {
-            "data": {"use_synthetic_fallback": True},
-            "model": {"backend": "lightgbm"},
-        }
-    )
-    resolved = TrainingService(cfg)._training_data_config()
-    assert resolved.data.use_synthetic_fallback is True
+def test_supervised_training_disables_synthetic_fallback_for_all_backends():
+    for backend in ("evolved_nn", "lightgbm", "xgboost"):
+        cfg = AppConfig.model_validate(
+            {
+                "data": {"use_synthetic_fallback": True},
+                "model": {"backend": backend},
+            }
+        )
+        resolved = TrainingService(cfg)._training_data_config()
+        assert resolved.data.use_synthetic_fallback is False
 
 
 def test_minimum_training_bars_matches_config():
@@ -67,6 +57,7 @@ def test_resolve_training_bars_uses_live_cache(tmp_path):
         }
     )
     from epoch_ai.data.downloader import HistoricalDownloader
+    from epoch_ai.data.provenance import SOURCE_EXCHANGE, write_data_provenance
 
     end = pd.Timestamp.now(tz="UTC").floor("1min")
     index = pd.date_range(end=end, periods=52000, freq="1min", tz="UTC")
@@ -79,6 +70,13 @@ def test_resolve_training_bars_uses_live_cache(tmp_path):
     cache_path = downloader._cache_path(cfg.primary_symbol)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(cache_path)
+    write_data_provenance(
+        cache_path,
+        source=SOURCE_EXCHANGE,
+        symbol=cfg.primary_symbol,
+        timeframe=cfg.timeframe,
+        n_bars=len(frame),
+    )
 
     assert resolve_training_bars(cfg, None) == 52000
     assert resolve_training_bars(cfg, None, full_history=True) is None

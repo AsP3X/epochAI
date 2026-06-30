@@ -252,13 +252,10 @@ def seed_checkpoint_from_last_step(
     ``Step 75 | ...``). The next ``train`` run resumes at step ``N + 1``.
     """
     from epoch_ai.data.downloader import HistoricalDownloader
+    from epoch_ai.data.training_policy import config_for_supervised_training
     from epoch_ai.features.pipeline import FeaturePipeline, build_target, forward_return
 
-    cfg = config
-    if cfg.model.backend == "evolved_nn" and cfg.data.use_synthetic_fallback:
-        cfg = cfg.model_copy(deep=True)
-        cfg.data.use_synthetic_fallback = False
-
+    cfg = config_for_supervised_training(config)
     market = HistoricalDownloader(cfg).load_or_download(cfg.primary_symbol, n_bars=n_bars)
     features = FeaturePipeline(cfg).transform(market)
     y = build_target(market, cfg.prediction)

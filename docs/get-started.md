@@ -4,10 +4,15 @@ A simple, command-first guide from a fresh clone to a trained predictor and pape
 bot. Pick your **hardware profile** (CPU, low-end GPU, or high-end GPU) and follow that
 column — every step works the same way, only a few `--set` flags change.
 
-Run **all commands from the repository root**.
+Run **all commands from the repository root**. Examples use **bash** (Linux/macOS).
+On Windows, use `.venv\Scripts\Activate.ps1` and replace `\` line continuation with `` ` ``.
 
 > **Paper-only by default.** Research and education software — not financial advice.
 > Real-money order routing stays disabled unless you explicitly enable live mode with keys.
+
+> **Real data required for training.** `train`, `retrain`, and `auto-retrain` always use
+> exchange OHLCV (or a provenanced parquet cache). Synthetic fallback is **off** by default
+> and is only for pytest/CI — not production training.
 
 ---
 
@@ -19,214 +24,208 @@ horizons (1m → 1h) with calibrated P(up) and quantile bands, and feeds a separ
 
 ```mermaid
 flowchart LR
-  DL[download] --> TR[train] --> REG[(artifacts/models)]
-  REG --> RUN[predict / run] --> LOG[(SQLite + action_log)]
-  LOG --> RT[retrain] --> REG
+  DL[download full history] --> TR[train fast_fit deep MLP] --> REG[(artifacts/models)]
+  REG --> EH[evaluate-holdout] --> RUN[predict / run] --> LOG[(SQLite + action_log)]
+  LOG --> RT[auto-retrain] --> REG
 ```
 
-The flow is always the same: **setup → download → train → predict → run → retrain.**
+The flow is always the same: **setup → download real data → train → holdout check →
+predict → run → auto-retrain.**
 
 ---
 
 ## Pick your hardware profile
 
-| Profile | Use when | `model.device` | Key flags (added at train time) |
-| --- | --- | --- | --- |
-| **CPU** | No NVIDIA GPU | `cpu` | smaller population/generations; `torch_compile=false` |
-| **GPU low** | 4–8 GB NVIDIA (GTX 1650, T4, 3060) | `cuda` | `cuda_worker_cap_max=2`, `cuda_batch_cap=512`, `torch_compile=false` |
-| **GPU high** | 24–48 GB NVIDIA (3090, 4090, A6000) | `cuda` | `successive_halving=true`, bigger search, `cuda_batch_cap=4096` |
+Production defaults in `config/config.yaml` (2026-06):
 
-If you set nothing, the defaults auto-detect: `model.device=auto` uses CUDA when present
-(else CPU), `cuda_auto_workers` picks a worker count from GPU VRAM, and `cuda_auto_batch`
-scales the batch size. The profile flags below just push harder (high-end) or pull back
-(low-end) than the auto defaults.
+- **`evolution.fast_fit=true`** — one deep fixed MLP per retrain (no evolution loop)
+- **`nn.fixed_hidden_sizes=[512,384,256,128,64]`** — 5-layer network
+- **`nn.torch_compile=false`**, **`nn.cuda_batch_cap=4096`**, **`use_synthetic_fallback=false`**
+
+| Profile | Use when | Train command extras |
+| --- | --- | --- |
+| **CPU** | No NVIDIA GPU | `--set model.device=cpu` |
+| **GPU low** | 4–8 GB VRAM (T4, 3060) | `--set model.device=cuda` + lower batch/worker caps below |
+| **GPU high** | 16–48 GB VRAM (3090, 4090, A6000) | `--set model.device=cuda` (defaults are already tuned) |
+
+Optional alternative backend for large tabular history:
+
+```bash
+python -m epoch_ai train --fresh --set model.backend=xgboost --set model.device=cuda
+```
 
 ---
 
 ## 0. One-time setup (all profiles)
 
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+**Requires Python 3.12+.** See `README.md` § Install dependencies for Linux/macOS/Windows
+install paths (Ubuntu 20.04 needs pyenv).
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
 pip install -r requirements.txt -r requirements-dev.txt
+pip install torch                    # GPU: see https://pytorch.org for cu121/cu124 wheel
+pip install -r requirements-optional.txt   # ccxt, xgboost, etc.
+pip install ccxt                     # required for live download
 ```
 
-Linux/macOS: use `python3 -m venv .venv`, `source .venv/bin/activate`.
+Confirm install and resolved config:
 
-Then install **PyTorch** (required for the default `evolved_nn` model). Choose the build
-that matches your profile:
-
-```powershell
-# CPU profile (no GPU)
-pip install torch
-
-# GPU profiles (CUDA build — check pytorch.org for your CUDA version)
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-```
-
-Optional extras (live exchange downloads, Telegram, API, MLflow, xgboost):
-
-```powershell
-pip install -r requirements-optional.txt
-# at minimum, for live data:  pip install ccxt
-```
-
-**Linux GPU + `torch.compile`:** Triton JIT needs Python dev headers. If training later
-crashes with `Python.h: No such file or directory`, install them
-(`apt install python3.12-dev`) or just keep `model.nn.torch_compile=false` (the low-end
-profile already disables it).
-
-Confirm the install and resolved config:
-
-```powershell
+```bash
 python -m epoch_ai info
 ```
 
 ---
 
-## 1. Download market data (all profiles)
+## 1. Download real market data (all profiles)
 
 **Required before the first train.** The downloader fetches OHLCV plus context feeds,
-cleans them, and caches parquet under `artifacts/data/`. Later commands read this cache —
-they do not hit the exchange unless the cache is missing or you ask them to refresh.
+cleans them, caches parquet under `artifacts/data/`, and writes a **provenance sidecar**
+(`*.provenance.json`, `source: exchange`). Training rejects synthetic or unprovenanced
+caches.
 
-```powershell
-# Needs ccxt + network. --bars N fetches the most recent N bars.
+### Production (full history)
+
+```bash
+python -m epoch_ai download --full-history
+```
+
+First run can take a long time (multi-year 1m BTC + context symbols). Re-runs extend the
+cache forward from the last timestamp.
+
+### Legacy cache / “no provenance” error
+
+If `train` fails with *no provenance metadata*, re-download:
+
+```bash
+python -m epoch_ai download --full-history --force
+```
+
+### Capped run (smoke or limited RAM)
+
+```bash
 python -m epoch_ai download --bars 87000
 ```
 
-Why 87000? The default 1-minute config keeps ~30 days (`initial_train_period=43200`) for
-the first training window, and feature warm-up/label filtering drops roughly half the
-rows. **~87,000 raw bars** is the practical minimum for a real default-config train.
-
-No network or geo-blocked? Use the deterministic synthetic fallback for an offline smoke:
-
-```powershell
-python -m epoch_ai download --bars 8000 `
-  --set data.use_synthetic_fallback=true --set data.context_symbols=[]
-```
+Why 87000? Default 1m config uses `initial_train_period=43200` (~30 days); feature warm-up
+and label filtering drop roughly half the raw rows. **~87,000 bars** is the practical
+minimum for a default-config train.
 
 | Flag | Purpose |
 | --- | --- |
+| `--full-history` | Backfill from exchange start (`historical_start_date: earliest`) |
 | `--bars N` | Fetch the most recent N bars |
-| `--force` | Re-download primary symbol even if cached |
+| `--force` | Re-fetch primary symbol (rewrites cache + provenance) |
 | `--symbol ETH/USDT` | Override primary symbol |
-| `--set data.use_synthetic_fallback=true` | Offline synthetic data |
-| `--set data.context_symbols=[]` | Skip context coins (faster) |
 
-Re-running `download` **extends** the cache forward from the last cached timestamp.
+**Context symbols** (ETH/SOL/BNB/DOGE) must cover the same time range as BTC for
+`features.cross_asset` to work. Extend their caches or temporarily disable:
+
+```bash
+python -m epoch_ai train --set features.cross_asset=false
+```
 
 ---
 
 ## 2. Train (choose your profile)
 
-This is the core walk-forward loop: train on the oldest window → predict the next unseen
-slice → log the outcome → expand the window → repeat. `--log-predictions` records
-out-of-sample results to SQLite so the retrain loop has data later.
+Walk-forward loop: train on oldest window → predict next unseen slice → expand → repeat.
+Omit `--log-predictions` on very long full-history runs (CPU-heavy); add it on shorter
+runs if you plan to use `retrain` from SQLite logs.
+
+### Default production (GPU high — uses shipped config)
+
+```bash
+python -m epoch_ai train --set model.device=cuda
+```
+
+Resume after Ctrl+C (same command):
+
+```bash
+python -m epoch_ai train --set model.device=cuda
+```
+
+Fresh start from step 0:
+
+```bash
+python -m epoch_ai train --fresh --set model.device=cuda
+```
+
+### GPU low (4–8 GB VRAM)
+
+```bash
+python -m epoch_ai train --set model.device=cuda \
+  --set model.nn.cuda_batch_cap=512 \
+  --set model.nn.batch_size=128 \
+  --set model.nn.fixed_hidden_sizes=[256,128,64]
+```
 
 ### CPU
 
-`evolved_nn` on CPU is fully supported but slow, so shrink the search. Best for smokes,
-small configs, or overnight runs:
-
-```powershell
-python -m epoch_ai train --bars 87000 --log-predictions `
-  --set model.device=cpu `
-  --set model.nn.torch_compile=false `
-  --set model.evolution.population_size=6 `
-  --set model.evolution.generations=4
+```bash
+python -m epoch_ai train --set model.device=cpu
 ```
 
-For a quick minutes-long plumbing check on any machine, shrink the windows too:
+### Fast plumbing smoke (~minutes, still real data if cache exists)
 
-```powershell
+```bash
 python -m epoch_ai download --bars 8000
-python -m epoch_ai train --bars 8000 --max-steps 12 --log-predictions `
-  --set model.device=cpu `
-  --set walk_forward.initial_train_period=800 `
-  --set walk_forward.step_size=200 `
-  --set execution.min_buffer_bars=500 `
-  --set model.evolution.fast_fit=true
+python -m epoch_ai train --bars 8000 --max-steps 12 --fresh \
+  --set model.device=cpu \
+  --set walk_forward.initial_train_period=800 \
+  --set walk_forward.step_size=200 \
+  --set execution.min_buffer_bars=500
 ```
 
-### GPU low (4–8 GB)
+### Holdout gate (recommended after train)
 
-Keep parallel candidates and batches small so you don't run out of VRAM:
-
-```powershell
-python -m epoch_ai train --bars 87000 --log-predictions `
-  --set model.device=cuda `
-  --set model.evolution.cuda_worker_cap_max=2 `
-  --set model.nn.cuda_batch_cap=512 `
-  --set model.nn.batch_size=128 `
-  --set model.nn.torch_compile=false
-```
-
-Turning on `model.evolution.successive_halving=true` also helps weak GPUs finish sooner.
-
-### GPU high (24–48 GB)
-
-Open up parallelism and batch size, enable successive halving, and reinvest the freed
-time into a larger architecture search:
-
-```powershell
-python -m epoch_ai train --bars 87000 --log-predictions `
-  --set model.device=cuda `
-  --set model.evolution.successive_halving=true `
-  --set model.evolution.cuda_worker_cap_max=12 `
-  --set model.evolution.population_size=24 `
-  --set model.evolution.generations=12 `
-  --set model.nn.cuda_batch_cap=4096
+```bash
+python -m epoch_ai evaluate-holdout
 ```
 
 ### Common train flags
 
 | Flag | When to use |
 | --- | --- |
-| `--bars N` | Cap to N cached bars (use ≥ 87000 with default config) |
-| `--log-predictions` | Write OOS predictions/outcomes to SQLite (needed for `retrain`) |
+| `--bars N` | Cap to N cached bars (omit for full cache) |
+| `--log-predictions` | SQLite OOS log (needed for `retrain`; slow on huge runs) |
 | `--max-steps N` | Cap walk-forward iterations (smokes) |
-| `--refresh-data` | Re-download OHLCV before training (default is cache-only) |
-| `--full-history` | Backfill multi-year history from exchange start (slow) |
-| `--fresh` | Delete checkpoint and restart from step 0 |
-| `--no-resume` | Ignore checkpoint but keep the file |
-| `--set model.evolution.fast_fit=true` | Skip evolution for a quick plumbing test |
+| `--refresh-data` | Re-download before train |
+| `--full-history` | Train after full backfill target |
+| `--fresh` | Delete checkpoint; restart step 0 |
+| `--no-resume` | Ignore checkpoint file |
+| `--set model.evolution.fast_fit=false` | Re-enable evolution search (slow; research only) |
 
-Long runs checkpoint after each step (`artifacts/checkpoints/`). Press **Ctrl+C** to pause,
-then re-run the same `train` command to resume. Watch progress without training:
+Progress without training:
 
-```powershell
+```bash
 python -m epoch_ai progress
 python -m epoch_ai progress --watch --interval 5
 ```
 
-When training completes you'll see a summary with the model version and step count;
-models land in `artifacts/models/v_*/`.
+Models land in `artifacts/models/v_*/`; checkpoints in `artifacts/checkpoints/`.
 
-### Tuning quick reference
+### Tuning quick reference (shipped `config/config.yaml`)
 
-| Knob | Default | CPU | GPU low | GPU high |
-| --- | --- | --- | --- | --- |
-| `model.device` | `auto` | `cpu` | `cuda` | `cuda` |
-| `model.evolution.population_size` | `12` | `6` | `12` | `24` |
-| `model.evolution.generations` | `8` | `4` | `8` | `12` |
-| `model.evolution.cuda_worker_cap_max` | `12` | – | `2` | `12` |
-| `model.evolution.successive_halving` | `false` | `false` | `true` | `true` |
-| `model.nn.batch_size` | `256` | `256` | `128` | `256` |
-| `model.nn.cuda_batch_cap` | `2048` | – | `512` | `4096` |
-| `model.nn.torch_compile` | `true` | `false` | `false` | `true` |
-| `model.cuda.matmul_precision` | `high` | – | `high` | `high` |
+| Knob | Shipped default | GPU low override |
+| --- | --- | --- |
+| `model.evolution.fast_fit` | `true` | `true` |
+| `model.nn.fixed_hidden_sizes` | `[512,384,256,128,64]` | `[256,128,64]` |
+| `model.nn.cuda_batch_cap` | `4096` | `512` |
+| `model.nn.torch_compile` | `false` | `false` |
+| `model.device` | `auto` | `cuda` |
+| `data.use_synthetic_fallback` | `false` | `false` |
+| `walk_forward.retrain_frequency` | `5` | `5` |
 
-You can also set any of these permanently in `config/config.yaml` instead of repeating
-`--set` flags (search "Weak GPU example" / "High-end example" for ready-made blocks).
+Permanent changes: edit `config/config.yaml` instead of repeating `--set`.
 
 ---
 
 ## 3. Inspect forecasts
 
-Multi-horizon forecast for the latest bar using the promoted champion model:
-
-```powershell
+```bash
 python -m epoch_ai predict
 python -m epoch_ai predict --json
 ```
@@ -235,83 +234,83 @@ python -m epoch_ai predict --json
 
 ## 4. Run the bot (paper / replay)
 
-Load the registry model and simulate bar-by-bar execution. Near-random data hugs
-P(up)≈0.5, so the `--*-threshold 0.5` flags force directional trades for a visible demo.
-
-```powershell
-# Historical replay tail (most common)
-python -m epoch_ai run --bars 6000 --live-bars 300 --replay `
+```bash
+python -m epoch_ai run --bars 6000 --live-bars 300 --replay \
   --log-predictions --long-threshold 0.5 --short-threshold 0.5
-
-# Simulated live feed (offline-safe)
-python -m epoch_ai run --live-feed --bars 6000 --live-bars 300 --log-predictions
 ```
 
-Session state (open position, equity) persists to `artifacts/session_state.json` across
-restarts.
+Simulated live feed (offline replay):
+
+```bash
+python -m epoch_ai run --live-feed --bars 6000 --live-bars 300 --log-predictions
+```
 
 ---
 
 ## 5. Keep improving (retrain loop)
 
-After the first full train, refresh data and improve on a cadence. Pick **one**:
-
-```powershell
-# A. Simple retrain from logged predictions (needs prior --log-predictions runs)
-python -m epoch_ai download --bars 87000
-python -m epoch_ai retrain --min-new-samples 50
-
-# B. Full walk-forward retrain on updated history
-python -m epoch_ai train --bars 87000 --log-predictions
-
-# C. Safe auto-retrain: train a challenger, promote only if it beats the champion
+```bash
+# Refresh real data, then safe challenger/champion gate (recommended)
+python -m epoch_ai download --full-history
 python -m epoch_ai auto-retrain
 
-# D. Scheduled daily loop (run under cron / Task Scheduler in production)
+# Or scheduled daily loop
 python -m epoch_ai schedule-retrain --promote --interval-hours 24 --max-cycles 1000
 ```
 
-Use the **same profile `--set` flags** from Step 2 on `retrain` / `train` here too.
+Retrain from SQLite logs only (needs prior `--log-predictions`):
+
+```bash
+python -m epoch_ai retrain --min-new-samples 50
+```
+
+Full walk-forward retrain on updated history:
+
+```bash
+python -m epoch_ai train --set model.device=cuda
+```
 
 ---
 
-## Cheat sheet (first full pass)
+## Cheat sheet (production GPU path)
 
-```powershell
+```bash
 # Setup (once)
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -U pip
 pip install -r requirements.txt -r requirements-dev.txt
-pip install torch          # add --index-url .../cu121 for GPU
-pip install ccxt
+pip install torch ccxt
+pip install -r requirements-optional.txt
 
-# Verify, download, train, run
 python -m epoch_ai info
-python -m epoch_ai download --bars 87000
+python -m epoch_ai download --full-history
 
-# --- train: use the line for YOUR profile ---
-# CPU:
-python -m epoch_ai train --bars 87000 --log-predictions --set model.device=cpu `
-  --set model.nn.torch_compile=false `
-  --set model.evolution.population_size=6 --set model.evolution.generations=4
-# GPU low:
-python -m epoch_ai train --bars 87000 --log-predictions --set model.device=cuda `
-  --set model.evolution.cuda_worker_cap_max=2 --set model.nn.cuda_batch_cap=512 `
-  --set model.nn.batch_size=128 --set model.nn.torch_compile=false
-# GPU high:
-python -m epoch_ai train --bars 87000 --log-predictions --set model.device=cuda `
-  --set model.evolution.successive_halving=true `
-  --set model.evolution.population_size=24 --set model.evolution.generations=12 `
-  --set model.nn.cuda_batch_cap=4096
-
-# Verify + paper run
+python -m epoch_ai train --set model.device=cuda
+python -m epoch_ai evaluate-holdout
 python -m epoch_ai predict --json
-python -m epoch_ai run --bars 6000 --live-bars 300 --replay `
-  --log-predictions --long-threshold 0.5 --short-threshold 0.5
 
-# Ongoing
+python -m epoch_ai run --bars 6000 --live-bars 300 --replay \
+  --long-threshold 0.5 --short-threshold 0.5
+
 python -m epoch_ai auto-retrain
 ```
+
+---
+
+## Developer / CI only (synthetic data)
+
+**Not for production training.** Pytest uses in-memory synthetic fixtures. To run an
+offline pipeline smoke with fake OHLCV (no exchange):
+
+```bash
+python -m epoch_ai download --bars 8000 \
+  --set data.use_synthetic_fallback=true \
+  --set data.context_symbols=[]
+python -m epoch_ai backtest --bars 8000 --max-steps 12 \
+  --set data.use_synthetic_fallback=true
+```
+
+`train` will still **reject** synthetic caches — use `backtest` for offline demos.
 
 ---
 
@@ -320,23 +319,19 @@ python -m epoch_ai auto-retrain
 | Command | Purpose |
 | --- | --- |
 | `info` | Print resolved YAML config |
-| `download` | Fetch/cache OHLCV + context (run before train) |
+| `download` | Fetch/cache real OHLCV + provenance (run before train) |
 | `train` | Progressive walk-forward train + registry (primary) |
 | `progress` | Walk-forward position; `--watch` for live view |
 | `predict` | Multi-horizon forecast table / `--json` |
+| `evaluate-holdout` | Score on untouched final tail |
 | `run` | Load registry model; paper / replay / live-feed |
-| `retrain` | Retrain from SQLite logs or parquet fallback |
-| `auto-retrain` | Challenger/champion gate; `--promote-policy` for PPO |
+| `retrain` | Retrain from SQLite logs or real parquet fallback |
+| `auto-retrain` | Challenger/champion gate |
 | `schedule-retrain` | Periodic retrain loop (`--promote`) |
-| `train-policy` | Train optional PPO trading policy on OOS replay |
-| `evaluate-holdout` | Score predictor + policy on the untouched final tail |
-| `backtest` | Walk-forward + trading metrics report |
-| `tune` / `promote` | Config sweep and best-experiment export |
+| `backtest` | Walk-forward + trading metrics (offline smoke OK) |
 | `export` | Open-weights bundle + model card |
-| `serve` / `telegram` | HTTP API / optional bot |
-| `kill-switch` | Halt or resume live trading globally |
 
-Global flags on most commands: `--config path`, `--symbol BTC/USDT`, `--set key=value`, `-v`.
+Global flags: `--config path`, `--symbol BTC/USDT`, `--set key=value`, `-v`.
 
 ---
 
@@ -345,13 +340,11 @@ Global flags on most commands: `--config path`, `--symbol BTC/USDT`, `--set key=
 | Path | Contents |
 | --- | --- |
 | `artifacts/data/*.parquet` | Cached market history |
+| `artifacts/data/*.provenance.json` | `exchange` / `synthetic` source tag |
 | `artifacts/models/v_*/` | Versioned open-weights models |
 | `artifacts/models/current.json` | Promoted champion pointer |
 | `artifacts/checkpoints/` | Walk-forward resume JSON |
 | `artifacts/logs/predictions.sqlite` | Prediction/outcome store (cumulative) |
-| `artifacts/logs/action_log.jsonl` | Bot experience for feedback retrain |
-| `artifacts/policy/` | PPO policy + promoted champion |
-| `artifacts/session_state.json` | Paper session snapshot |
 
 Do not delete `artifacts/` casually — SQLite logs and checkpoints are cumulative.
 
@@ -359,17 +352,17 @@ Do not delete `artifacts/` casually — SQLite logs and checkpoints are cumulati
 
 ## Development checks
 
-```powershell
-.venv\Scripts\ruff.exe check .
-.venv\Scripts\python.exe -m pytest -m "not slow"
-.venv\Scripts\python.exe -m pytest
+```bash
+.venv/bin/ruff check .
+.venv/bin/python -m pytest -m "not slow"
+.venv/bin/python -m pytest
 ```
 
 ---
 
 ## Further reading
 
-- `README.md` — overview and progressive-learning parameters
+- `README.md` — overview, Python install, progressive-learning parameters
 - `docs/runbook.md` — operator runbook (kill switch, treasury, live seam)
 - `docs/adr/0008-multi-horizon-and-learned-policy.md` — multi-head + RL boundary
-- `AGENTS.md` — agent/cloud gotchas (synthetic fallback, fast smokes)
+- `AGENTS.md` — agent/cloud gotchas (real-data policy, GPU profiles)

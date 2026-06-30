@@ -1,9 +1,10 @@
 # Backtest smoke
 
-Quick end-to-end progressive backtest (synthetic data OK in cloud):
+Quick end-to-end progressive backtest. Synthetic fallback OK here (not for `train`):
 
 ```bash
-python -m epoch_ai backtest --bars 8000 --max-steps 12
+python -m epoch_ai backtest --bars 8000 --max-steps 12 \
+  --set data.use_synthetic_fallback=true
 ```
 
 For faster runs during development:

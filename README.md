@@ -41,9 +41,9 @@ operating closer to real-time.
   training datasets from logged history.
 - **Backtester** with proper trading metrics (Sharpe, Sortino, Calmar, profit factor,
   max drawdown, win rate) including realistic fees + slippage.
-- **Runs fully offline.** Public exchange APIs are often geo-blocked from cloud/CI;
-  when CCXT is unreachable a realistic, regime-switching **synthetic dataset** is
-  generated so the entire pipeline is runnable anywhere.
+- **Runs fully offline for demos.** Public exchange APIs are often geo-blocked from
+  cloud/CI; synthetic fallback exists for **backtest/CI only** (`use_synthetic_fallback:
+  true`). Production **`train` requires real exchange data** and provenanced parquet caches.
 - **Clear extension paths** — incremental learning (River), live WebSocket streaming
   (ccxt.pro), MLflow tracking, vectorbt cross-checks (all optional, lazy-imported).
 
@@ -78,11 +78,10 @@ epochAI has two primary workflows:
 Future **Telegram** and **website** interfaces will call the same `TrainingService` and
 `RuntimeService` in `epoch_ai/services/` (see `docs/adr/0003-train-run-interfaces.md`).
 
-**New here?** Copy-paste the commands in [Train the model](#train-the-model) —
+**New here?** Start with **`docs/get-started.md`** (command-first, GPU profiles, real-data
+policy). Copy-paste paths in [Train the model](#train-the-model) —
 [first-time training](#3-first-time-training) then
-[repeat to improve](#4-repeat-to-improve-the-model). The
-[full pipeline](#quick-start-full-pipeline) section covers backtest, paper-trade,
-tuning, and live replay.
+[repeat to improve](#4-repeat-to-improve-the-model).
 
 ## Train the model
 
@@ -97,6 +96,13 @@ Copy-paste commands below. Run them in order the first time, then repeat
 python3 --version
 # or, if installed separately:
 python3.12 --version
+```
+
+Training requires **real exchange data** (provenanced parquet cache). Synthetic data is
+for tests/demos only. Before the first train:
+
+```bash
+python -m epoch_ai download --full-history
 ```
 
 If the version is below 3.12, install Python 3.12 first (Linux):
@@ -144,11 +150,11 @@ pip install -r requirements-dev.txt   # ruff + pytest (for development)
 
 If `python3` is already 3.12+, `python3 -m venv .venv` is fine instead of `python3.12`.
 
-On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`. CCXT is
-optional; with `data.use_synthetic_fallback: true` the pipeline runs fully offline when
-the exchange is unreachable.
+On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`. **Training
+requires real exchange data** (`pip install ccxt` + `download`); synthetic fallback is
+disabled for `train`/`retrain` (tests/CI only).
 
-Optional: `pip install -r requirements-optional.txt` for live CCXT downloads, PyTorch
+Optional: `pip install -r requirements-optional.txt` for PyTorch
 (`evolved_nn` default backend), GPU backends (`xgboost`), MLflow, etc.
 
 ### 2. Configure (optional)
@@ -167,32 +173,41 @@ python -m epoch_ai train --set walk_forward.step_size=100
 
 ### 3. First-time training
 
-Run these once to download history, train, and verify the model loads:
+Run these once to download **real** history, train, and verify the model loads.
+See **`docs/get-started.md`** for full GPU/CPU profiles and troubleshooting.
 
 ```bash
-# 1. Download (or synthesize) market history
-python -m epoch_ai download --bars 16000
+# 1. Download full history (requires ccxt + network; writes provenance sidecar)
+python -m epoch_ai download --full-history
 
-# 2. Train — walk-forward over all history; registers model + optional SQLite logs
-python -m epoch_ai train --bars 16000 --log-predictions
+# 2. Train — walk-forward; default config uses fast_fit deep MLP
+python -m epoch_ai train --set model.device=cuda
 
-# 3. Smoke-test the registered model
+# 3. Holdout sanity check
+python -m epoch_ai evaluate-holdout
+
+# 4. Smoke-test the registered model
 python -m epoch_ai run --bars 6000 --live-bars 100 \
     --long-threshold 0.5 --short-threshold 0.5
 ```
 
-**Fast smoke test** (fewer bars, capped steps):
+**Fast smoke test** (capped bars/steps; still needs real or provenanced cache):
 
 ```bash
 python -m epoch_ai download --bars 8000
-python -m epoch_ai train --bars 8000 --max-steps 12
+python -m epoch_ai train --bars 8000 --max-steps 12 --fresh
 ```
 
-**GPU training** (optional, NVIDIA + `pip install xgboost`):
+**XGBoost GPU alternative** (optional, `pip install xgboost`):
 
 ```bash
-python -m epoch_ai train --bars 16000 --log-predictions \
-    --set model.backend=xgboost --set model.device=cuda
+python -m epoch_ai train --fresh --set model.backend=xgboost --set model.device=cuda
+```
+
+If `train` reports missing provenance, refresh the cache:
+
+```bash
+python -m epoch_ai download --full-history --force
 ```
 
 When training finishes you should see:
@@ -374,15 +389,15 @@ python -m epoch_ai export
 The sections below cover download, run, backtest, paper-trade, tuning, and live
 replay. For **training only**, use [Train the model](#train-the-model) above.
 
-### 1. Download (or synthesize) the longest possible history
+### 1. Download real market history
 
 ```bash
-python -m epoch_ai download --bars 16000
+python -m epoch_ai download --full-history
 ```
 
-If the exchange is reachable, CCXT fetches OHLCV (+ funding history) from
-`historical_start_date` forward. Otherwise a synthetic regime-switching dataset is
-generated and cached to `artifacts/data/`.
+CCXT fetches OHLCV (+ funding, context symbols) from `historical_start_date` forward and
+writes parquet plus a provenance sidecar (`source: exchange`) under `artifacts/data/`.
+Training rejects synthetic or unprovenanced caches. Use `--bars N` for a capped download.
 
 ### 2. Train the AI
 
@@ -555,9 +570,10 @@ backtest:
 **Model backends & GPU acceleration (optional).** The learner is pluggable via
 `model.backend`:
 
-- **`evolved_nn`** (default) — evolutionary PyTorch MLP on engineered features. Requires
-  `pip install torch`. Training uses **real** exchange or cached parquet data (synthetic
-  fallback is disabled). Tune search with `model.evolution.*` and `model.nn.*`.
+- **`evolved_nn`** (default) — PyTorch MLP on engineered features (`fast_fit` deep fixed
+  arch in shipped config). Requires `pip install torch`. Training requires **real**
+  exchange or provenanced parquet (`train` disables synthetic fallback). Tune with
+  `model.nn.*`; set `model.evolution.fast_fit=false` only for research evolution runs.
 - **`lightgbm`** — fast CPU GBM training. `model.device=gpu` uses LightGBM's OpenCL
   backend (requires a GPU-enabled LightGBM build).
 - **`xgboost`** (optional, `pip install xgboost`) — ships prebuilt **CUDA wheels**, so
