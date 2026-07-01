@@ -948,6 +948,10 @@ class RLConfig(BaseModel):
         ge=0.0,
         description="Penalty per unit of absolute position-weight change, to discourage churn/overtrading.",
     )
+    observation_mode: Literal["forecast", "embedding"] = Field(
+        default="forecast",
+        description="forecast: per-horizon forecast summary observation. embedding: the shared TCN trunk embedding (A.5 shared-trunk policy).",
+    )
     device: Literal["auto", "cpu", "cuda"] = "auto"
     promotion: PolicyPromotionConfig = Field(default_factory=PolicyPromotionConfig)
 

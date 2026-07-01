@@ -9,7 +9,11 @@ import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.policy.guardrails import apply_guardrails
-from epoch_ai.execution.policy.observation import build_observation, observation_dim
+from epoch_ai.execution.policy.observation import (
+    build_embedding_observation,
+    build_observation,
+    observation_dim,
+)
 from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.services.types import (
     MultiHorizonPredictionResult,
@@ -32,6 +36,10 @@ class TradingReplayEnv:
     # Agent: dict horizon -> {"p_up","q10","q50","q90"} arrays aligned to ``returns`` rows;
     #        None => proxy mode (PPO training path). CAUSAL: see from_forecasts shift.
     structured_forecasts: dict[int, dict[str, np.ndarray]] | None = None
+    # Human: shared-trunk (A.5) path. When set, _obs() emits the TCN trunk embedding at the
+    #        current bar (plus portfolio scalars) instead of the forecast/proxy observation.
+    # Agent: shape (n_rows, trunk_dim) aligned 1:1 to ``returns`` rows; None => forecast mode.
+    embeddings: np.ndarray | None = None
     _pos: int = 0
     portfolio: PortfolioState = field(init=False)
     _prev_equity: float = field(init=False)
@@ -98,6 +106,38 @@ class TradingReplayEnv:
             p_up_series=forecasts[primary]["p_up"],
             obs_dim=observation_dim(config),
             structured_forecasts=forecasts,
+        )
+
+    @classmethod
+    def from_embeddings(
+        cls,
+        config: AppConfig,
+        close: pd.Series,
+        embeddings: np.ndarray,
+    ) -> TradingReplayEnv:
+        """Build a shared-trunk (A.5) env whose observation is the TCN trunk embedding.
+
+        Mirrors :meth:`from_forecasts` causality: the embedding at row ``i`` is causal
+        (features up to ``i``) and must earn the ``i -> i+1`` return, so the realized
+        return is shifted forward by one bar (no look-ahead). ``structured_forecasts`` is
+        left ``None`` so this env has no forecast dependency at all.
+
+        Args:
+            close: Close prices aligned 1:1 with the rows of ``embeddings``.
+            embeddings: ``(n_rows, trunk_dim)`` trunk embeddings from ``model.embed``.
+        """
+        close = close.astype(float)
+        # Human: identical shift to from_forecasts -- embedding at row i earns i->i+1 return.
+        # Agent: CAUSAL; returns[i] = (close[i+1]/close[i]-1); last row -> 0 (no next bar).
+        rets = close.pct_change().shift(-1).fillna(0.0).to_numpy(dtype=np.float32)
+        emb = np.asarray(embeddings, dtype=np.float32)
+        return cls(
+            config=config,
+            returns=rets,
+            # Agent: p_up_series is unused in embedding obs mode; keep a neutral 0.5 proxy.
+            p_up_series=np.full(len(rets), 0.5, dtype=np.float32),
+            obs_dim=emb.shape[1] + 4,
+            embeddings=emb,
         )
 
     @property
@@ -169,6 +209,13 @@ class TradingReplayEnv:
         )
 
     def _obs(self) -> np.ndarray:
+        # Human: shared-trunk (A.5) obs uses the trunk embedding directly. Branch BEFORE any
+        #        current_forecast() call so a pure embedding env (no forecasts) still works.
+        # Agent: CONFIG rl.observation_mode == "embedding" + embeddings set => embedding obs.
+        if self.config.rl.observation_mode == "embedding" and self.embeddings is not None:
+            return build_embedding_observation(
+                self.embeddings[self._pos], self.portfolio, self.config
+            )
         return build_observation(self.current_forecast(), self.portfolio, self.config)
 
     def step(self, target_weight: float) -> tuple[np.ndarray, float, bool, dict]:

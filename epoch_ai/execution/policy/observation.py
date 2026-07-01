@@ -21,6 +21,31 @@ def observation_dim(config: AppConfig) -> int:
     return len(decision_horizons(config)) * 3 + 4
 
 
+def embedding_observation_dim(trunk_dim: int) -> int:
+    """Flat embedding observation size: trunk embedding + 4 portfolio scalars."""
+    return trunk_dim + 4
+
+
+def build_embedding_observation(
+    embedding_row: np.ndarray,
+    portfolio: PortfolioState,
+    config: AppConfig,
+) -> np.ndarray:
+    """Concatenate the trunk embedding with the same 4 portfolio scalars as build_observation."""
+    # Agent: same portfolio scalars/order as build_observation so the two obs modes are
+    #        interchangeable except for the leading feature block (embedding vs forecasts).
+    parts = list(np.asarray(embedding_row, dtype=float).ravel())
+    parts.extend(
+        [
+            portfolio.position_weight,
+            portfolio.drawdown(),
+            portfolio.session_loss(),
+            float(portfolio.bars_in_position) / max(1, config.trading.max_hold_bars),
+        ]
+    )
+    return np.asarray(parts, dtype=np.float32)
+
+
 def build_observation(
     multi: MultiHorizonPredictionResult | None,
     portfolio: PortfolioState,

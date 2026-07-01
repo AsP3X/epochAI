@@ -142,7 +142,7 @@ model:
     max_epochs: 200
     batch_size: 256               # base batch; CUDA may scale up when cuda_auto_batch=true
     cuda_auto_batch: true         # scale batches toward cuda_batch_cap on GPU
-    cuda_batch_cap: 4096          # max auto batch (lower on weak GPUs, e.g. 512)
+    cuda_batch_cap: 4096          # upper bound on auto-batch; lower on constrained VRAM (e.g. 512)
     cuda_batches_per_epoch: 16    # target steps/epoch when auto-batch scales up
     val_check_interval: 1          # validate every N epochs (1 = every epoch)
     patience: 15
@@ -167,6 +167,18 @@ model:
     weight_decay: 0.00001
     compute_importance: true     # permutation importance on the final walk-forward fit only
     mixed_precision: true        # torch.autocast on CUDA
+    # Trunk capacity scaling: the shared TCN trunk is where extra hidden layers draw
+    # connections across many bars, so more blocks + longer lookback = more temporal
+    # structure learned. The shipped defaults above are CPU-safe; scale up on real GPUs.
+    # GPU preset (powerful CUDA card) — deeper/wider trunk + longer context:
+    #   channels: [128, 128, 256, 256, 512]  # 5 dilated residual blocks (deeper trunk)
+    #   lookback: 192                         # longer context window (192 x 5m = 16h)
+    #   batch_size: 1024                      # larger batches saturate the GPU
+    #   mixed_precision: true                 # keep autocast on for GPU throughput
+    # Weak GPU / CPU downshift — shallower/narrower trunk + shorter context:
+    #   channels: [32, 32]
+    #   lookback: 64
+    #   batch_size: 256
   # CUDA runtime (evolved_nn / tcn on GPU only; ignored on CPU)
   cuda:
     allow_tf32: true               # Ampere+ matmul speedup
@@ -296,6 +308,7 @@ rl:
   reward_mode: multi_bar        # per_bar (noisy single-bar PnL) or multi_bar (lower-noise, accumulates over reward_horizon)
   reward_horizon: 12            # bars over which a decision's PnL is accumulated (multi_bar mode)
   turnover_penalty: 0.0         # penalty per unit of absolute position-weight change (discourages churn)
+  observation_mode: forecast    # forecast: per-horizon forecast summary obs. embedding: shared TCN trunk embedding (A.5 shared-trunk policy)
   device: auto
   promotion:
     enabled: true

@@ -223,6 +223,47 @@ def test_tcn_empty_channels_rejected():
         TCNConfig.model_validate({"channels": []})
 
 
+def test_tcn_large_capacity_config_validates():
+    # Human: a powerful-GPU trunk (deeper/wider blocks + longer context) must be a
+    #        first-class config, not something the schema rejects. This guards the
+    #        documented GPU preset in config/config.yaml.
+    # Agent: CONFIG model.tcn; asserts large capacity round-trips; no upper-bound rejection.
+    config = AppConfig.model_validate(
+        {
+            "model": {
+                "backend": "tcn",
+                "tcn": {
+                    "channels": [128, 128, 256, 256, 512],
+                    "lookback": 192,
+                    "batch_size": 1024,
+                    "mixed_precision": True,
+                },
+            }
+        }
+    )
+    tcn = config.model.tcn
+    assert tcn.channels == [128, 128, 256, 256, 512]
+    assert tcn.channels[-1] == 512
+    assert len(tcn.channels) == 5  # five dilated residual blocks (deeper trunk)
+    assert tcn.lookback == 192
+    assert tcn.batch_size == 1024
+    assert tcn.mixed_precision is True
+
+
+def test_tcn_config_rejects_nonpositive():
+    from pydantic import ValidationError
+
+    from epoch_ai.config.settings import TCNConfig
+
+    # Human: lower bounds keep a large-capacity trunk sane; lookback must be >= 1 bar
+    #        and channel counts must be positive.
+    # Agent: CONFIG model.tcn; lookback below ge and non-positive channels raise.
+    with pytest.raises(ValidationError):
+        TCNConfig.model_validate({"lookback": 0})
+    with pytest.raises(ValidationError, match="channels"):
+        TCNConfig.model_validate({"channels": [64, 0, 128]})
+
+
 def test_tcn_backend_sets_slower_retrain_cadence():
     # tcn (like evolved_nn) defaults walk-forward retrain_frequency to 5 unless overridden.
     config = AppConfig.model_validate({"model": {"backend": "tcn"}})
