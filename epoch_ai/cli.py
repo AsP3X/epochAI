@@ -351,6 +351,10 @@ def cmd_train_policy(args: argparse.Namespace) -> int:
     from epoch_ai.execution.policy.env import TradingReplayEnv
     from epoch_ai.execution.policy.observation import observation_dim
     from epoch_ai.execution.policy.ppo_policy import PPOPolicy
+    from epoch_ai.learning.policy_promotion import (
+        _build_policy_env_from_model,
+        _load_multi_head_champion,
+    )
 
     market = HistoricalDownloader(config).load_or_download(
         config.primary_symbol,
@@ -366,13 +370,24 @@ def cmd_train_policy(args: argparse.Namespace) -> int:
         return 1
 
     oos = market.iloc[start:]
-    env = TradingReplayEnv.from_market(config, oos)
+    # Human: train the policy on the champion model's REAL per-bar forecasts when a
+    #        multi-head champion is available; otherwise fall back to the price-only proxy.
+    # Agent: CAUSAL via _build_policy_env_from_model (from_forecasts, return shift -1).
+    champion_model = _load_multi_head_champion(config)
+    if champion_model is not None:
+        env = _build_policy_env_from_model(config, oos, champion_model)
+        logger.info("Policy training on REAL champion forecasts (%d bars).", len(env.returns))
+    else:
+        logger.warning(
+            "No multi-head champion model found; training policy on price-only proxy env."
+        )
+        env = TradingReplayEnv.from_market(config, oos)
     policy = PPOPolicy(observation_dim(config), config.rl)
     stats = policy.train(env)
     policy.save(config.rl.policy_path)
 
     print("\n=== Policy training complete ===")
-    print(f"OOS bars replayed : {len(oos):,}")
+    print(f"OOS bars replayed : {len(env.returns):,}")
     print(f"PPO updates         : {stats.updates}")
     print(f"Mean rollout reward : {stats.mean_reward:.6f}")
     print(f"Final replay equity : {stats.final_equity:,.2f}")

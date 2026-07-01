@@ -18,10 +18,71 @@ from epoch_ai.execution.policy.executor import baseline_weight
 from epoch_ai.execution.policy.guardrails import apply_guardrails
 from epoch_ai.execution.policy.observation import build_observation, observation_dim
 from epoch_ai.execution.policy.ppo_policy import PPOPolicy
+from epoch_ai.features.pipeline import FeaturePipeline
 from epoch_ai.learning.adaptation import resolved_holdout_bars
+from epoch_ai.models.base import MultiHeadModel
+from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _load_multi_head_champion(config: AppConfig) -> MultiHeadModel | None:
+    """Load the promoted champion iff it is a usable multi-head predictor.
+
+    Returns the loaded :class:`MultiHeadModel` when a multi-head champion exists in the
+    registry, else ``None`` (no model yet, or a non-multi-head backend). Callers fall
+    back to the price-only proxy env when this returns ``None``.
+
+    Args:
+        config: Resolved app config; reads ``model.model_dir`` and ``prediction.task``.
+
+    Returns:
+        The champion model, or ``None`` when unavailable / not multi-head.
+    """
+    # Agent: READS registry(config.model.model_dir); FileNotFoundError => no model yet.
+    try:
+        model, _ = ModelRegistry(config.model.model_dir).load(
+            None, config.model, task=config.prediction.task
+        )
+    except FileNotFoundError:
+        return None
+    if isinstance(model, MultiHeadModel) and model.multi_head_spec_ is not None:
+        return model
+    return None
+
+
+def _build_policy_env_from_model(
+    config: AppConfig,
+    market_slice: pd.DataFrame,
+    model: MultiHeadModel,
+) -> TradingReplayEnv:
+    """Build a real-forecast replay env over ``market_slice`` using the champion model.
+
+    The policy is trained/scored on the actual trained model's per-bar, per-horizon
+    forecasts (``predict_structured``) instead of the price-only ``from_market`` proxy.
+
+    Causality: features are computed causally by :class:`FeaturePipeline`; warmup NaN
+    rows are dropped; ``close`` is aligned to the surviving prediction rows; and
+    :meth:`TradingReplayEnv.from_forecasts` shifts the realized return forward by one bar
+    so the forecast at bar ``i`` earns the ``i -> i+1`` return (no look-ahead).
+
+    Args:
+        config: Resolved app config (feature/prediction settings).
+        market_slice: OHLCV slice to replay (must contain a ``close`` column).
+        model: A trained multi-head model with a populated ``multi_head_spec_``.
+
+    Returns:
+        A :class:`TradingReplayEnv` in real-forecast mode (``structured_forecasts`` set).
+    """
+    # Agent: CAUSAL feature transform; dropna trims warmup rows before prediction.
+    features = FeaturePipeline(config).transform(market_slice)
+    features = features.dropna()
+    # Agent: predict_structured handles sequence (TCN) windowing; rows align 1:1 with input.
+    structured = model.predict_structured(features[list(features.columns)])
+    close = market_slice.loc[features.index, "close"].astype(float)
+    horizons = list(model.multi_head_spec_.horizons)
+    return TradingReplayEnv.from_forecasts(config, close, structured, horizons)
 
 
 @dataclass(slots=True)
@@ -183,8 +244,24 @@ def auto_train_and_promote_policy(
     holdout = close.iloc[-eval_bars:]
     train = close.iloc[: len(close) - eval_bars]
 
-    train_env = TradingReplayEnv.from_market(config, pd.DataFrame({"close": train}))
-    eval_env = TradingReplayEnv.from_market(config, pd.DataFrame({"close": holdout}))
+    # Human: prefer the champion model's REAL forecasts for both the train env and every
+    #        holdout benchmark env. When no multi-head champion exists, fall back to the
+    #        price-only proxy so bootstrap cycles still work.
+    # Agent: CAUSAL split -- train_market is the pre-holdout slice, holdout_market the tail.
+    champion_model = _load_multi_head_champion(config)
+    holdout_market = market.iloc[-eval_bars:]
+    train_market = market.iloc[: len(market) - eval_bars]
+
+    if champion_model is not None:
+        train_env = _build_policy_env_from_model(config, train_market, champion_model)
+
+        def make_eval_env() -> TradingReplayEnv:
+            return _build_policy_env_from_model(config, holdout_market, champion_model)
+    else:
+        train_env = TradingReplayEnv.from_market(config, pd.DataFrame({"close": train}))
+
+        def make_eval_env() -> TradingReplayEnv:
+            return TradingReplayEnv.from_market(config, pd.DataFrame({"close": holdout}))
 
     challenger = PPOPolicy(observation_dim(config), config.rl)
     challenger.train(train_env)
@@ -205,15 +282,9 @@ def auto_train_and_promote_policy(
         cap = config.trading.max_position_fraction * config.risk.max_leverage
         return float(challenger.act(obs, deterministic=True) * cap)
 
-    challenger_metrics = replay_metrics(eval_env, ppo_fn)
-    baseline_metrics = replay_metrics(
-        TradingReplayEnv.from_market(config, pd.DataFrame({"close": holdout})),
-        baseline_fn,
-    )
-    buy_hold_metrics = replay_metrics(
-        TradingReplayEnv.from_market(config, pd.DataFrame({"close": holdout})),
-        buy_hold_fn,
-    )
+    challenger_metrics = replay_metrics(make_eval_env(), ppo_fn)
+    baseline_metrics = replay_metrics(make_eval_env(), baseline_fn)
+    buy_hold_metrics = replay_metrics(make_eval_env(), buy_hold_fn)
 
     metric = promo.metric
     challenger_value = metric_value(challenger_metrics, metric)
@@ -232,10 +303,7 @@ def auto_train_and_promote_policy(
                 return float(champion.act(obs, deterministic=True) * cap)
 
             champion_value = metric_value(
-                replay_metrics(
-                    TradingReplayEnv.from_market(config, pd.DataFrame({"close": holdout})),
-                    champion_fn,
-                ),
+                replay_metrics(make_eval_env(), champion_fn),
                 metric,
             )
         except Exception as exc:  # noqa: BLE001
