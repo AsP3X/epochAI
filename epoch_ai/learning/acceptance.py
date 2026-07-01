@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.execution.policy.env import TradingReplayEnv
 from epoch_ai.execution.policy.executor import baseline_weight
-from epoch_ai.execution.policy.observation import policy_env_observation
+from epoch_ai.execution.policy.observation import expected_policy_obs_dim, policy_env_observation
 from epoch_ai.execution.policy.ppo_policy import PPOPolicy
 from epoch_ai.features.pipeline import FeaturePipeline, build_multi_horizon_targets, build_target
 from epoch_ai.learning.adaptation import resolved_holdout_bars
@@ -33,6 +34,41 @@ class AcceptanceReport:
     policy_champion: dict[str, float] = field(default_factory=dict)
     skipped: bool = False
     reason: str = ""
+
+
+def holdout_replay_env_factories(
+    config: AppConfig,
+    holdout_market: pd.DataFrame,
+    *,
+    structured: dict[int, dict[str, object]] | None,
+    real_horizons: list[int],
+    data_index: pd.Index,
+    tcn_model: object | None,
+) -> tuple[Callable[[], TradingReplayEnv], Callable[[], TradingReplayEnv]]:
+    """Build baseline (forecast) and policy (forecast or embedding) replay env factories."""
+    if structured is not None and real_horizons:
+        close_for_env = holdout_market.loc[data_index, "close"].astype(float)
+
+        def make_baseline_env() -> TradingReplayEnv:
+            return TradingReplayEnv.from_forecasts(
+                config, close_for_env, structured, real_horizons
+            )
+
+        if config.rl.observation_mode == "embedding" and tcn_model is not None:
+            from epoch_ai.execution.policy.trunk_policy import build_embedding_env
+
+            def make_policy_env() -> TradingReplayEnv:
+                return build_embedding_env(config, holdout_market, tcn_model)
+        else:
+            make_policy_env = make_baseline_env
+        return make_baseline_env, make_policy_env
+
+    holdout_df = pd.DataFrame({"close": holdout_market["close"]})
+
+    def make_proxy_env() -> TradingReplayEnv:
+        return TradingReplayEnv.from_market(config, holdout_df.copy())
+
+    return make_proxy_env, make_proxy_env
 
 
 def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> AcceptanceReport:
@@ -88,34 +124,21 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
     except FileNotFoundError:
         predictor_metrics = {}
 
-    # Human: build a fresh replay env for each benchmark run. With a usable multi-head
-    #        model we score the policy on its real per-bar forecasts or trunk embeddings;
-    #        otherwise we fall back to the price-only proxy env (no model available).
-    # Agent: CAUSAL real path via from_forecasts/from_embeddings (return shifted -1).
     tcn_model = None
     if structured is not None and real_horizons:
-        close_for_env = holdout_market.loc[data.index, "close"].astype(float)
         from epoch_ai.models.tcn_model import TCNModel
 
         if isinstance(loaded_model, TCNModel):
             tcn_model = loaded_model
 
-        if config.rl.observation_mode == "embedding" and tcn_model is not None:
-            from epoch_ai.execution.policy.trunk_policy import build_embedding_env
-
-            def make_env() -> TradingReplayEnv:
-                return build_embedding_env(config, holdout_market, tcn_model)
-        else:
-
-            def make_env() -> TradingReplayEnv:
-                return TradingReplayEnv.from_forecasts(
-                    config, close_for_env, structured, real_horizons
-                )
-    else:
-        holdout_df = pd.DataFrame({"close": holdout_market["close"]})
-
-        def make_env() -> TradingReplayEnv:
-            return TradingReplayEnv.from_market(config, holdout_df.copy())
+    make_baseline_env, make_policy_env = holdout_replay_env_factories(
+        config,
+        holdout_market,
+        structured=structured,
+        real_horizons=real_horizons,
+        data_index=data.index,
+        tcn_model=tcn_model,
+    )
 
     def baseline_fn(env: TradingReplayEnv) -> float:
         return baseline_weight(config, env.current_forecast(), env.portfolio)
@@ -123,20 +146,24 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
     def buy_hold_fn(_env: TradingReplayEnv) -> float:
         return config.trading.max_position_fraction * config.risk.max_leverage
 
-    baseline = replay_metrics(make_env(), baseline_fn)
-    buy_hold = replay_metrics(make_env(), buy_hold_fn)
+    baseline = replay_metrics(make_baseline_env(), baseline_fn)
+    buy_hold = replay_metrics(make_baseline_env(), buy_hold_fn)
 
     champion_metrics: dict[str, float] = {}
     champion_path = Path(config.rl.promotion.champion_path)
     if champion_path.exists():
-        policy = PPOPolicy.load(champion_path, config.rl)
+        trunk_dim = tcn_model.trunk_dim if tcn_model is not None else None
+        expected_obs = expected_policy_obs_dim(config, trunk_dim=trunk_dim)
+        policy = PPOPolicy.load(
+            champion_path, config.rl, expected_obs_dim=expected_obs
+        )
         cap = config.trading.max_position_fraction * config.risk.max_leverage
 
         def ppo_fn(env: TradingReplayEnv) -> float:
             obs = policy_env_observation(env, config)
             return float(policy.act(obs, deterministic=True) * cap)
 
-        replay = replay_metrics(make_env(), ppo_fn)
+        replay = replay_metrics(make_policy_env(), ppo_fn)
         champion_metrics = {
             "total_return": replay.total_return,
             "sharpe": replay.sharpe,

@@ -9,6 +9,23 @@
 > Milestone Gate A (forecast-mode policy baseline) and Task 10 holdout gates (frozen
 > embedding vs forecast; joint fine-tune vs Gate A without Brier/AUC regression).
 
+### Code-complete checklist
+
+- [x] Phase 0 — ADR 0009 + cross-links (`0008`, `prediction-execution-separation.mdc`)
+- [x] Phase 1 — policy training on real champion forecasts
+- [x] Phase 2 — multi-bar reward config + env
+- [x] Phase 3 — multi-timescale policy observation
+- [x] Phase 4 — larger PPO defaults
+- [x] Phase 5 — learned policy default backend + absolute-metric promotion
+- [x] Phase 6 — `TCNModel.embed`
+- [x] Phase 7–9 — trunk policy scaffolding + embedding env
+- [x] Phase 10 Steps 1–2 (code) — frozen + joint trunk trainer (`trunk_joint_train.py`)
+- [ ] Phase 10 Step 3 — GPU holdout gate + documented results
+- [x] Phase 11 — TCN capacity preset docs + validation
+- [ ] Milestone Gate A — GPU baseline numbers (forecast-mode policy)
+
+Per-task Step checkboxes below are kept for historical trace; see checklist above for rollup.
+
 **Architecture:** A shared **trunk** (the existing dilated causal TCN, scaled up) produces a per-bar embedding. Two consumers read that embedding: (1) supervised **prediction heads** (per-horizon direction logit + return quantiles) trained on actual future price — the dense, low-noise signal that keeps forecasts accurate and powers the chart; (2) a **policy/value head** trained by PPO on a **multi-bar** simulated-trading reward — the signal that teaches strategy. Both gradients flow into the trunk, so learning to trade reshapes the representation while direct price supervision keeps it honest. We reach this end-state through a staged on-ramp that de-risks the RL work.
 
 **Tech Stack:** Python 3.12, PyTorch (CUDA), existing `MultiHeadModel`/`TCNModel`, `TradingReplayEnv`, PPO, Pydantic v2 config + YAML, pytest.

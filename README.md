@@ -70,14 +70,13 @@ python -m epoch_ai train --bars 16000
 python -m epoch_ai train-policy --bars 6000
 
 # Stage 1 shared trunk: frozen embedding policy
-python -m epoch_ai train-policy --bars 6000 \
-  --set rl.observation_mode=embedding
+python -m epoch_ai train-policy --bars 6000 --observation-mode embedding
 
 # Stage 2 joint fine-tune (GPU recommended)
 python -m epoch_ai train-policy --bars 6000 \
-  --set rl.observation_mode=embedding \
-  --set rl.trunk_frozen=false \
-  --set rl.policy_loss_weight=0.1
+  --observation-mode embedding \
+  --no-trunk-frozen \
+  --policy-loss-weight 0.1
 
 # Holdout acceptance (predictor + policy benchmarks)
 python -m epoch_ai evaluate-holdout --bars 6000

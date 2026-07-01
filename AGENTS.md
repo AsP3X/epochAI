@@ -59,7 +59,7 @@ Future Telegram/website interfaces must call these services — see
 | `schedule-retrain --promote` | Periodic retrain loop using the challenger/champion gate |
 | `schedule-retrain --promote --promote-policy` | Daily coarse retrain + policy promotion |
 | `predict --json` | Multi-horizon forecast for the latest bar |
-| `train-policy` | Train PPO on OOS bar replay |
+| `train-policy` | Train PPO on OOS replay (`--observation-mode`, `--trunk-frozen`, `--policy-loss-weight`) |
 | `evaluate-holdout` | Score predictor + policy on untouched final holdout |
 | `run --policy baseline` | Override trading policy backend at runtime |
 | `--set walk_forward.step_size=100` | Dotted config overrides on any command |

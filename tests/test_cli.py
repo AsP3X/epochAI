@@ -17,6 +17,35 @@ def test_cli_info_with_set():
     assert main(["info", "--set", "timeframe=5m"]) == 0
 
 
+def test_cli_train_policy_accepts_observation_flags(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        "data:\n"
+        "  use_synthetic_fallback: true\n"
+        "  data_dir: artifacts/data\n"
+        "walk_forward:\n"
+        "  initial_train_period: 100\n"
+    )
+    # Insufficient bars triggers exit 1 after argparse/config resolve — that's OK;
+    # we only need to verify the CLI accepts the new flags without argparse errors.
+    rc = main(
+        [
+            "train-policy",
+            "--config",
+            str(cfg),
+            "--bars",
+            "50",
+            "--observation-mode",
+            "embedding",
+            "--no-trunk-frozen",
+            "--policy-loss-weight",
+            "0.1",
+        ]
+    )
+    assert rc == 1
+
+
 def test_cli_download(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "cfg.yaml"

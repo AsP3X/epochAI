@@ -345,6 +345,12 @@ def cmd_train_policy(args: argparse.Namespace) -> int:
         config.rl.total_updates = args.updates
     if args.rollout_steps is not None:
         config.rl.rollout_steps = args.rollout_steps
+    if getattr(args, "observation_mode", None) is not None:
+        config.rl.observation_mode = args.observation_mode
+    if getattr(args, "trunk_frozen", None) is not None:
+        config.rl.trunk_frozen = args.trunk_frozen
+    if getattr(args, "policy_loss_weight", None) is not None:
+        config.rl.policy_loss_weight = args.policy_loss_weight
     config.rl.enabled = True
 
     from epoch_ai.data.downloader import HistoricalDownloader
@@ -1128,6 +1134,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Override rl.rollout_steps.",
+    )
+    p_train_policy.add_argument(
+        "--observation-mode",
+        choices=("forecast", "embedding"),
+        default=None,
+        help="Policy observation: forecast summaries or TCN trunk embedding (ADR 0009).",
+    )
+    p_train_policy.add_argument(
+        "--trunk-frozen",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="When embedding mode: freeze TCN trunk (Stage 1). Use --no-trunk-frozen for joint fine-tune.",
+    )
+    p_train_policy.add_argument(
+        "--policy-loss-weight",
+        type=float,
+        default=None,
+        help="Joint trunk fine-tune weight (Stage 2; requires --no-trunk-frozen and embedding mode).",
     )
     p_train_policy.set_defaults(func=cmd_train_policy)
 

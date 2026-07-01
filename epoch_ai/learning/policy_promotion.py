@@ -17,6 +17,7 @@ from epoch_ai.execution.policy.env import TradingReplayEnv
 from epoch_ai.execution.policy.executor import baseline_weight
 from epoch_ai.execution.policy.guardrails import apply_guardrails
 from epoch_ai.execution.policy.observation import (
+    expected_policy_obs_dim,
     observation_dim,
     policy_env_observation,
 )
@@ -467,7 +468,16 @@ def auto_train_and_promote_policy(
     champion_value: float | None = None
     if champion_path.exists():
         try:
-            champion = PPOPolicy.load(champion_path, config.rl)
+            trunk_dim = None
+            if eval_model is not None:
+                from epoch_ai.models.tcn_model import TCNModel
+
+                if isinstance(eval_model, TCNModel):
+                    trunk_dim = eval_model.trunk_dim
+            expected_obs = expected_policy_obs_dim(config, trunk_dim=trunk_dim)
+            champion = PPOPolicy.load(
+                champion_path, config.rl, expected_obs_dim=expected_obs
+            )
 
             def champion_fn(env: TradingReplayEnv) -> float:
                 obs = policy_env_observation(env, config)

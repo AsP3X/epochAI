@@ -25,12 +25,15 @@ horizons (5m → 4h) with calibrated P(up) and quantile bands, and feeds a separ
 ```mermaid
 flowchart LR
   DL[download full history] --> TR[train TCN temporal model] --> REG[(artifacts/models)]
-  REG --> EH[evaluate-holdout] --> RUN[predict / run] --> LOG[(SQLite + action_log)]
+  REG --> TP[train-policy PPO] --> EH[evaluate-holdout] --> RUN[predict / run] --> LOG[(SQLite + action_log)]
   LOG --> RT[auto-retrain] --> REG
 ```
 
-The flow is always the same: **setup → download real data → train → holdout check →
+The flow is always the same: **setup → download real data → train → (optional) train-policy → holdout check →
 predict → run → auto-retrain.**
+
+Default runtime uses the **learned PPO policy** when an artifact exists
+(`learned_with_baseline_fallback`); see [Learned policy (ADR 0009)](#6-learned-policy-optional-adr-0009).
 
 ---
 
@@ -273,6 +276,50 @@ python -m epoch_ai train --set model.device=cuda
 
 ---
 
+## 6. Learned policy (optional, ADR 0009)
+
+After `train` registers a TCN champion, train a **PPO trading policy** on out-of-sample
+replay. Default observation mode uses the model's **forecast summaries**; **embedding
+mode** feeds the policy the full TCN trunk vector (shared-trunk brain).
+
+### Phase A — forecast observations (default)
+
+```bash
+python -m epoch_ai train-policy --bars 6000
+python -m epoch_ai evaluate-holdout --bars 6000
+```
+
+### Stage 1 — frozen trunk embedding
+
+```bash
+python -m epoch_ai train-policy --bars 6000 --observation-mode embedding
+```
+
+### Stage 2 — joint trunk fine-tune (GPU recommended)
+
+```bash
+python -m epoch_ai train-policy --bars 6000 \
+  --observation-mode embedding \
+  --no-trunk-frozen \
+  --policy-loss-weight 0.1
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--observation-mode forecast\|embedding` | Forecast summary vs TCN trunk embedding |
+| `--trunk-frozen` / `--no-trunk-frozen` | Stage 1 freeze vs Stage 2 joint fine-tune |
+| `--policy-loss-weight` | Supervised aux scale during joint fine-tune |
+| `--updates N` | Cap PPO updates (smoke) |
+| `--rollout-steps N` | Rollout length override |
+
+YAML equivalents: `rl.observation_mode`, `rl.trunk_frozen`, `rl.policy_loss_weight`.
+Policy artifacts store `observation_mode` and `obs_dim` — retrain after switching modes.
+
+`run` uses the learned policy automatically when `artifacts/policy/` exists; baseline
+ensemble is the fallback.
+
+---
+
 ## Cheat sheet (production GPU path)
 
 ```bash
@@ -287,6 +334,7 @@ python -m epoch_ai info
 python -m epoch_ai download --full-history
 
 python -m epoch_ai train --set model.device=cuda
+python -m epoch_ai train-policy --bars 6000
 python -m epoch_ai evaluate-holdout
 python -m epoch_ai predict --json
 
@@ -322,6 +370,7 @@ python -m epoch_ai backtest --bars 8000 --max-steps 12 \
 | `info` | Print resolved YAML config |
 | `download` | Fetch/cache real OHLCV + provenance (run before train) |
 | `train` | Progressive walk-forward train + registry (primary) |
+| `train-policy` | Train PPO on OOS replay (`--observation-mode`, joint trunk flags) |
 | `progress` | Walk-forward position; `--watch` for live view |
 | `predict` | Multi-horizon forecast table / `--json` |
 | `evaluate-holdout` | Score on untouched final tail |
@@ -366,4 +415,5 @@ Do not delete `artifacts/` casually — SQLite logs and checkpoints are cumulati
 - `README.md` — overview, Python install, progressive-learning parameters
 - `docs/runbook.md` — operator runbook (kill switch, treasury, live seam)
 - `docs/adr/0008-multi-horizon-and-learned-policy.md` — multi-head + RL boundary
+- `docs/adr/0009-shared-trunk-trading-brain.md` — shared TCN trunk + PPO embedding mode
 - `AGENTS.md` — agent/cloud gotchas (real-data policy, GPU profiles)
