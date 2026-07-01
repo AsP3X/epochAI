@@ -919,6 +919,20 @@ class RLConfig(BaseModel):
     total_updates: int = 50
     drawdown_penalty: float = 0.5
     sharpe_scale: float = 1.0
+    reward_mode: Literal["per_bar", "multi_bar"] = Field(
+        default="multi_bar",
+        description="per_bar: single-bar PnL reward (noisy). multi_bar: accumulate PnL over reward_horizon bars for a lower-noise learning signal.",
+    )
+    reward_horizon: int = Field(
+        default=12,
+        ge=1,
+        description="Bars over which a decision's PnL is accumulated for the reward when reward_mode='multi_bar'.",
+    )
+    turnover_penalty: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Penalty per unit of absolute position-weight change, to discourage churn/overtrading.",
+    )
     device: Literal["auto", "cpu", "cuda"] = "auto"
     promotion: PolicyPromotionConfig = Field(default_factory=PolicyPromotionConfig)
 

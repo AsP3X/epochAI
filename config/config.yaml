@@ -286,6 +286,9 @@ rl:
   total_updates: 50
   drawdown_penalty: 0.5
   sharpe_scale: 1.0
+  reward_mode: multi_bar        # per_bar (noisy single-bar PnL) or multi_bar (lower-noise, accumulates over reward_horizon)
+  reward_horizon: 12            # bars over which a decision's PnL is accumulated (multi_bar mode)
+  turnover_penalty: 0.0         # penalty per unit of absolute position-weight change (discourages churn)
   device: auto
   promotion:
     enabled: true

@@ -172,22 +172,43 @@ class TradingReplayEnv:
         return build_observation(self.current_forecast(), self.portfolio, self.config)
 
     def step(self, target_weight: float) -> tuple[np.ndarray, float, bool, dict]:
-        """Apply action, advance one bar, return (obs, reward, done, info)."""
+        """Apply action and return (obs, reward, done, info).
+
+        Behaviour depends on ``config.rl.reward_mode``:
+
+        * ``per_bar`` (legacy): advance exactly one bar; reward is the single-bar
+          equity change (numerically identical to the historical implementation),
+          minus an optional turnover penalty (default 0.0 => no-op).
+        * ``multi_bar`` (default): treat one call as ONE decision held constant for
+          up to ``config.rl.reward_horizon`` bars; reward is the accumulated block
+          return net of the (once-charged) entry fee, giving a lower-noise signal.
+        """
+        rl = self.config.rl
+        if rl.reward_mode == "per_bar":
+            return self._step_per_bar(target_weight)
+        return self._step_multi_bar(target_weight)
+
+    def _step_per_bar(self, target_weight: float) -> tuple[np.ndarray, float, bool, dict]:
+        """Legacy single-bar reward path (kept numerically identical to the original)."""
         trading = self.config.trading
         risk = self.config.risk
         weight = apply_guardrails(target_weight, self.portfolio, trading, risk)
+        # Human: capture the pre-trade weight before we overwrite position_weight so the
+        #        turnover term measures the actual change this decision requests.
+        # Agent: prev_position_weight also drives the fee delta below; capture once.
+        prev_position_weight = self.portfolio.position_weight
         bar_ret = float(self.returns[self._pos])
 
         cost_rate = risk.fee_rate + risk.slippage
-        delta = weight - self.portfolio.position_weight
+        delta = weight - prev_position_weight
         fee = abs(delta) * self.portfolio.equity * cost_rate
         funding = (
-            abs(self.portfolio.position_weight)
+            abs(prev_position_weight)
             * self.portfolio.equity
             * trading.funding_rate_per_bar
         )
 
-        pnl = self.portfolio.position_weight * bar_ret * self.portfolio.equity
+        pnl = prev_position_weight * bar_ret * self.portfolio.equity
         self.portfolio.equity = self.portfolio.equity + pnl - fee - funding
         self.portfolio.peak_equity = max(self.portfolio.peak_equity, self.portfolio.equity)
 
@@ -205,8 +226,82 @@ class TradingReplayEnv:
         )
         reward = step_ret * self.config.rl.sharpe_scale
         reward -= self.config.rl.drawdown_penalty * self.portfolio.drawdown()
+        # Human: turnover penalty discourages churn; defaults to 0.0 so legacy runs and
+        #        tests are unaffected (this line is a no-op unless explicitly configured).
+        # Agent: CONFIG rl.turnover_penalty; term == penalty * |weight - prev_weight|.
+        reward -= self.config.rl.turnover_penalty * abs(weight - prev_position_weight)
 
         self._prev_equity = self.portfolio.equity
         self._pos += 1
         done = self._pos >= len(self.returns) - 1
         return self._obs(), float(reward), done, {"equity": self.portfolio.equity, "weight": weight}
+
+    def _step_multi_bar(self, target_weight: float) -> tuple[np.ndarray, float, bool, dict]:
+        """Hold one decision for up to ``reward_horizon`` bars; reward is the block return.
+
+        Causality: the action is chosen from the observation at the CURRENT ``_pos``.
+        Only bars within the held block (``_pos`` .. ``_pos + n_bars``) affect equity, and
+        the returned observation reflects the state AT the new ``_pos`` (the next decision
+        point), so no bar beyond the block leaks into the observation.
+        """
+        trading = self.config.trading
+        risk = self.config.risk
+        rl = self.config.rl
+        weight = apply_guardrails(target_weight, self.portfolio, trading, risk)
+        # Human: guardrails + the entry fee are applied ONCE, at the decision boundary,
+        #        not per held bar -- this is what makes the cadence "multi-bar".
+        # Agent: prev_position_weight sizes the fee delta AND the turnover term below.
+        prev_position_weight = self.portfolio.position_weight
+
+        cost_rate = risk.fee_rate + risk.slippage
+        # Human: denominator for the block return is equity BEFORE the entry fee, so the
+        #        fee genuinely reduces the reward instead of cancelling out.
+        # Agent: decision_equity_before_fee = equity pre-fee; decision_equity = post-fee.
+        decision_equity_before_fee = self.portfolio.equity
+        fee = abs(weight - prev_position_weight) * decision_equity_before_fee * cost_rate
+        self.portfolio.equity = self.portfolio.equity - fee
+        decision_equity = self.portfolio.equity
+
+        # Human: hold the weight constant and roll equity forward one bar at a time up to
+        #        reward_horizon bars, stopping early if the return series is exhausted.
+        # Agent: CAUSAL; consumes returns[_pos] then advances _pos; never reads beyond it.
+        n_bars_held = 0
+        for _ in range(rl.reward_horizon):
+            bar_ret = float(self.returns[self._pos])
+            pnl = weight * bar_ret * self.portfolio.equity
+            funding = abs(weight) * self.portfolio.equity * trading.funding_rate_per_bar
+            self.portfolio.equity = self.portfolio.equity + pnl - funding
+            self.portfolio.peak_equity = max(
+                self.portfolio.peak_equity, self.portfolio.equity
+            )
+            self._pos += 1
+            self.portfolio.bars_elapsed += 1
+            n_bars_held += 1
+            if self._pos >= len(self.returns) - 1:
+                break
+
+        # Human: block return includes the entry fee (subtracted in the numerator) and is
+        #        measured against pre-fee equity; equals (final - pre_fee) / pre_fee.
+        # Agent: reward = block_ret*sharpe_scale - dd_penalty*drawdown - turnover*|dw|.
+        block_ret = (self.portfolio.equity - decision_equity - fee) / max(
+            1e-9, decision_equity_before_fee
+        )
+        reward = block_ret * rl.sharpe_scale
+        reward -= rl.drawdown_penalty * self.portfolio.drawdown()
+        reward -= rl.turnover_penalty * abs(weight - prev_position_weight)
+
+        self.portfolio.position_weight = weight
+        self.portfolio.bars_in_position = n_bars_held if abs(weight) > 1e-9 else 0
+
+        self._prev_equity = self.portfolio.equity
+        done = self._pos >= len(self.returns) - 1
+        return (
+            self._obs(),
+            float(reward),
+            done,
+            {
+                "equity": self.portfolio.equity,
+                "weight": weight,
+                "bars_held": n_bars_held,
+            },
+        )

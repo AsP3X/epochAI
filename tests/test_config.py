@@ -383,3 +383,23 @@ def test_safety_config_defaults():
     sc = SafetyConfig()
     assert sc.enabled is False
     assert sc.max_suspicion_score == 0.75
+
+
+def test_rl_reward_config_defaults():
+    from epoch_ai.config.settings import AppConfig
+
+    cfg = AppConfig().rl
+    assert cfg.reward_mode in {"per_bar", "multi_bar"}
+    assert cfg.reward_horizon >= 1
+    assert cfg.turnover_penalty >= 0.0
+
+
+def test_rl_reward_config_rejects_invalid_values():
+    from pydantic import ValidationError
+
+    from epoch_ai.config.settings import RLConfig
+
+    with pytest.raises(ValidationError):
+        RLConfig(reward_horizon=0)
+    with pytest.raises(ValidationError):
+        RLConfig(turnover_penalty=-1)
