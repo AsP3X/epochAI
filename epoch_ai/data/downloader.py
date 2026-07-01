@@ -36,8 +36,8 @@ from epoch_ai.utils.timeframe import timeframe_to_minutes
 logger = get_logger(__name__)
 
 _OHLCV_COLS = ["open", "high", "low", "close", "volume"]
-# Binance openInterestHist retains only the latest ~30 days regardless of startTime.
-_OI_MAX_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
+# Binance openInterestHist advertises ~1 month but rejects startTime at exactly 30 days.
+_OI_MAX_LOOKBACK_MS = 29 * 24 * 60 * 60 * 1000
 
 
 class HistoricalDownloader:
@@ -753,17 +753,23 @@ class HistoricalDownloader:
         if not getattr(exchange, "has", {}).get("fetchOpenInterestHistory"):
             return df
         try:
-            end_ms = int(df.index.max().timestamp() * 1000)
-            configured_since = self._start_since_ms(exchange)
-            # Human: Binance rejects startTime outside its ~30-day OI retention window.
-            # Agent: CLAMP since to max(configured_since, end_ms - 30d); CAUSAL ffill only.
-            since = max(configured_since, end_ms - _OI_MAX_LOOKBACK_MS)
             timeframe = self.config.timeframe
+            tf_ms = timeframe_to_minutes(timeframe) * 60_000
+            end_ms = int(df.index.max().timestamp() * 1000)
+            end_ms = end_ms - (end_ms % tf_ms)
+            configured_since = self._start_since_ms(exchange)
+            # Human: Binance rejects startTime older than ~29 days (30d fails with -1130).
+            # Agent: CLAMP since to max(configured_since, end_ms - 29d); floor to tf_ms; ffill only.
+            since = max(configured_since, end_ms - _OI_MAX_LOOKBACK_MS)
+            since = since - (since % tf_ms)
             limit = 500
             chunks: list[pd.Series] = []
             while since <= end_ms:
                 history = exchange.fetch_open_interest_history(
-                    symbol, timeframe=timeframe, since=since, limit=limit
+                    symbol,
+                    timeframe=timeframe,
+                    since=since,
+                    limit=limit,
                 )
                 if not history:
                     break
@@ -772,7 +778,10 @@ class HistoricalDownloader:
                 value_col = "openInterestValue" if "openInterestValue" in oi_df.columns else "openInterestAmount"
                 series = oi_df.set_index("timestamp")[value_col].rename("open_interest")
                 chunks.append(series)
-                since = int(history[-1]["timestamp"]) + 1
+                last_ts = int(history[-1]["timestamp"])
+                if last_ts >= end_ms:
+                    break
+                since = last_ts + tf_ms
                 if len(history) < limit:
                     break
 

@@ -380,7 +380,7 @@ def test_cache_only_raises_when_missing(tmp_path, monkeypatch):
 
 
 def test_open_interest_since_clamped_to_exchange_window(tmp_path):
-    """Binance openInterestHist rejects startTime older than ~30 days."""
+    """Binance openInterestHist rejects startTime older than ~29 days (30d returns -1130)."""
     config = AppConfig.model_validate({"data": {"data_dir": str(tmp_path / "data")}})
     downloader = HistoricalDownloader(config)
     df = _ohlcv_frame(4000)  # ~41 days at 15m — wider than Binance OI retention
@@ -405,6 +405,6 @@ def test_open_interest_since_clamped_to_exchange_window(tmp_path):
 
     result = downloader._attach_open_interest(FakeExchange(), "BTC/USDT", df.copy())
     assert captured_since, "expected at least one OI fetch"
-    assert captured_since[0] >= end_ms - 30 * 24 * 60 * 60 * 1000
+    assert captured_since[0] >= end_ms - 29 * 24 * 60 * 60 * 1000
     assert captured_since[0] < end_ms
     assert "open_interest" in result.columns
