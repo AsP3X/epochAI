@@ -315,8 +315,33 @@ python -m epoch_ai train-policy --bars 6000 \
 YAML equivalents: `rl.observation_mode`, `rl.trunk_frozen`, `rl.policy_loss_weight`.
 Policy artifacts store `observation_mode` and `obs_dim` — retrain after switching modes.
 
+**Full loop:** `python -m epoch_ai train-cycle --set model.device=cuda` runs download →
+train → holdout → policy → run until `--minutes` (default 10) or `--max-cycles` is reached.
+Add `--embedding` for the shared-trunk policy step; use `--minutes 0` for no time limit.
+
 `run` uses the learned policy automatically when `artifacts/policy/` exists; baseline
 ensemble is the fallback.
+
+### One command — full loop
+
+```bash
+# Default: repeat for 10 minutes (unlimited cycles until time runs out)
+python -m epoch_ai train-cycle --set model.device=cuda
+
+# With embedding policy step
+python -m epoch_ai train-cycle --set model.device=cuda --embedding
+
+# Exactly 3 cycles, no time limit
+python -m epoch_ai train-cycle --minutes 0 --max-cycles 3 --set model.device=cuda
+```
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--minutes` | `10` | Wall-clock budget (`0` = unlimited) |
+| `--max-cycles` | unlimited | Stop after N iterations |
+| `--bars` | `6000` | Holdout, policy, and run depth |
+| `--embedding` | off | Also train embedding-mode policy |
+| `--skip-download` | off | Use cached parquet only |
 
 ---
 
@@ -371,6 +396,7 @@ python -m epoch_ai backtest --bars 8000 --max-steps 12 \
 | `download` | Fetch/cache real OHLCV + provenance (run before train) |
 | `train` | Progressive walk-forward train + registry (primary) |
 | `train-policy` | Train PPO on OOS replay (`--observation-mode`, joint trunk flags) |
+| `train-cycle` | Full loop: download → train → holdout → policy → run (timed / counted) |
 | `progress` | Walk-forward position; `--watch` for live view |
 | `predict` | Multi-horizon forecast table / `--json` |
 | `evaluate-holdout` | Score on untouched final tail |

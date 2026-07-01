@@ -22,6 +22,7 @@ Sub-commands:
 * ``info``         - print the resolved configuration.
 * ``predict``      - multi-horizon forecast table or JSON for the latest bar.
 * ``train-policy`` - train PPO trading policy on out-of-sample bar replay.
+* ``train-cycle``  - loop download → train → holdout → policy → run (timed / counted).
 * ``evaluate-holdout`` - score predictor + policy on the untouched final holdout.
 
 Run ``python -m epoch_ai <command> --help`` for details.
@@ -403,6 +404,67 @@ def cmd_train_policy(args: argparse.Namespace) -> int:
     print(f"Mean rollout reward : {stats.mean_reward:.6f}")
     print(f"Final replay equity : {stats.final_equity:,.2f}")
     print(f"Saved policy        : {config.rl.policy_path}")
+    return 0
+
+
+def cmd_train_cycle(args: argparse.Namespace) -> int:
+    """Run the full train loop (download → train → holdout → policy → run) on a timer."""
+    from epoch_ai.learning.train_cycle import TrainCycleOptions, run_train_cycle_loop
+
+    config = _load(args)
+    options = TrainCycleOptions(
+        minutes=args.minutes,
+        max_cycles=args.max_cycles,
+        interval_minutes=args.interval_minutes,
+        bars=args.bars,
+        live_bars=args.live_bars,
+        train_bars=args.train_bars,
+        train_max_steps=args.max_steps,
+        full_history_download=not args.no_full_history,
+        skip_download=args.skip_download,
+        skip_run=args.skip_run,
+        embedding_policy=args.embedding,
+        fresh_train=args.fresh,
+        log_predictions=args.log_predictions,
+        long_threshold=args.long_threshold,
+        short_threshold=args.short_threshold,
+        policy_updates=args.updates,
+        policy_rollout_steps=args.rollout_steps,
+    )
+
+    print("\n=== Train cycle ===")
+    print(f"Time budget       : {args.minutes:g} min" + (" (unlimited)" if args.minutes <= 0 else ""))
+    print(
+        f"Max cycles        : {args.max_cycles if args.max_cycles is not None else 'unlimited'}"
+    )
+    print(f"Policy/run bars   : {args.bars}")
+    print(f"Embedding policy  : {args.embedding}")
+    print(f"Download          : {'skip' if args.skip_download else 'full-history' if not args.no_full_history else 'cached/--bars'}")
+
+    try:
+        summary = run_train_cycle_loop(config, options)
+    except KeyboardInterrupt:
+        logger.info("Train cycle interrupted by user.")
+        print("\n=== Train cycle interrupted ===")
+        return 130
+
+    print("\n=== Train cycle complete ===")
+    print(f"Cycles completed  : {summary.cycles_completed}")
+    print(f"Elapsed           : {summary.elapsed_seconds / 60:.2f} min")
+    print(f"Stopped           : {summary.stopped_reason}")
+    for iteration in summary.iterations:
+        status = "OK" if iteration.ok else "FAIL"
+        print(f"\n  Cycle {iteration.cycle} [{status}]")
+        for step in iteration.steps:
+            mark = "ok" if step.ok else "FAIL"
+            print(f"    {step.name:<24} {mark}  {step.detail}")
+
+    failed = [it for it in summary.iterations if not it.ok]
+    if failed:
+        return 1
+    if summary.cycles_completed == 0:
+        print("No cycles completed (time budget may have expired before iteration 1).")
+        return 1
     return 0
 
 
@@ -1154,6 +1216,104 @@ def build_parser() -> argparse.ArgumentParser:
         help="Joint trunk fine-tune weight (Stage 2; requires --no-trunk-frozen and embedding mode).",
     )
     p_train_policy.set_defaults(func=cmd_train_policy)
+
+    p_train_cycle = sub.add_parser(
+        "train-cycle",
+        help="Loop download → train → holdout → policy → run until time or cycle limit.",
+        parents=[parent],
+    )
+    p_train_cycle.add_argument(
+        "--minutes",
+        type=float,
+        default=10.0,
+        help="Wall-clock budget in minutes (default 10). Use 0 for no time limit.",
+    )
+    p_train_cycle.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="Stop after N full cycles (default: unlimited until --minutes elapses).",
+    )
+    p_train_cycle.add_argument(
+        "--interval-minutes",
+        type=float,
+        default=0.0,
+        help="Sleep between cycles when looping (default 0 = back-to-back).",
+    )
+    p_train_cycle.add_argument(
+        "--bars",
+        type=int,
+        default=6000,
+        help="History depth for holdout, policy training, and run replay.",
+    )
+    p_train_cycle.add_argument(
+        "--live-bars",
+        type=int,
+        default=300,
+        help="Tail length for the paper replay run step.",
+    )
+    p_train_cycle.add_argument(
+        "--train-bars",
+        type=int,
+        default=None,
+        help="Optional cap on bars for the walk-forward train step.",
+    )
+    p_train_cycle.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Skip the download step (use cached parquet).",
+    )
+    p_train_cycle.add_argument(
+        "--no-full-history",
+        action="store_true",
+        help="Download --bars instead of --full-history when download runs.",
+    )
+    p_train_cycle.add_argument(
+        "--embedding",
+        action="store_true",
+        help="After forecast policy train, also train with --observation-mode embedding.",
+    )
+    p_train_cycle.add_argument(
+        "--skip-run",
+        action="store_true",
+        help="Skip the final paper replay run step.",
+    )
+    p_train_cycle.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Discard walk-forward checkpoint each cycle (train --fresh).",
+    )
+    p_train_cycle.add_argument(
+        "--log-predictions",
+        action="store_true",
+        help="Log predictions during train/run steps.",
+    )
+    p_train_cycle.add_argument(
+        "--long-threshold",
+        type=float,
+        default=0.5,
+        help="Long threshold for the run step (default 0.5).",
+    )
+    p_train_cycle.add_argument(
+        "--short-threshold",
+        type=float,
+        default=0.5,
+        help="Short threshold for the run step (default 0.5).",
+    )
+    p_train_cycle.add_argument(
+        "--updates",
+        type=int,
+        default=None,
+        help="Override rl.total_updates for each train-policy step.",
+    )
+    p_train_cycle.add_argument(
+        "--rollout-steps",
+        type=int,
+        default=None,
+        help="Override rl.rollout_steps for each train-policy step.",
+    )
+    p_train_cycle.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
+    p_train_cycle.set_defaults(func=cmd_train_cycle)
 
     p_eval_holdout = sub.add_parser(
         "evaluate-holdout",

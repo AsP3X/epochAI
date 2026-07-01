@@ -17,6 +17,44 @@ def test_cli_info_with_set():
     assert main(["info", "--set", "timeframe=5m"]) == 0
 
 
+def test_cli_train_cycle_accepts_loop_flags(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        "data:\n"
+        "  use_synthetic_fallback: true\n"
+        "  data_dir: artifacts/data\n"
+        "walk_forward:\n"
+        "  initial_train_period: 100\n"
+    )
+    with patch("epoch_ai.learning.train_cycle.run_train_cycle_loop") as mock_loop:
+        from epoch_ai.learning.train_cycle import TrainCycleSummary
+
+        mock_loop.return_value = TrainCycleSummary(
+            cycles_completed=0,
+            iterations=[],
+            stopped_reason="minutes=10",
+            elapsed_seconds=1.0,
+        )
+        rc = main(
+            [
+                "train-cycle",
+                "--config",
+                str(cfg),
+                "--minutes",
+                "0.001",
+                "--max-cycles",
+                "1",
+                "--skip-download",
+                "--skip-run",
+            ]
+        )
+    assert rc == 1
+    mock_loop.assert_called_once()
+
+
 def test_cli_train_policy_accepts_observation_flags(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "cfg.yaml"
@@ -27,8 +65,6 @@ def test_cli_train_policy_accepts_observation_flags(tmp_path, monkeypatch):
         "walk_forward:\n"
         "  initial_train_period: 100\n"
     )
-    # Insufficient bars triggers exit 1 after argparse/config resolve — that's OK;
-    # we only need to verify the CLI accepts the new flags without argparse errors.
     rc = main(
         [
             "train-policy",

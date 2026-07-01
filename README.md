@@ -85,6 +85,9 @@ python -m epoch_ai evaluate-holdout --bars 6000
 Policy artifacts record `observation_mode` and `obs_dim`; mismatch with config raises a
 clear error at load time. Retrain after switching forecast ↔ embedding.
 
+**Full automated loop:** `python -m epoch_ai train-cycle --set model.device=cuda` (default
+10 min, unlimited cycles). See `docs/get-started.md` § Learned policy.
+
 ## Project layout
 
 ```
