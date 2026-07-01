@@ -125,33 +125,42 @@ def _build_challenger_policy(
     return PPOPolicy(observation_dim(config), config.rl)
 
 
-def _joint_brier_regression_reason(
+def _joint_prediction_regression_reason(
+    *,
     base_brier: float,
     cand_brier: float,
-    tolerance: float,
+    base_auc: float,
+    cand_auc: float,
+    brier_tolerance: float,
+    auc_tolerance: float,
 ) -> str | None:
-    """Return a veto reason when joint trunk fine-tuning regressed holdout Brier."""
-    if math.isnan(base_brier) or math.isnan(cand_brier):
-        return None
-    if cand_brier > base_brier + tolerance:
-        return (
-            f"holdout Brier regressed ({cand_brier:.6f} > champion {base_brier:.6f} "
-            f"+ {tolerance:.6f}); keeping champion policy"
-        )
+    """Return a veto reason when joint trunk fine-tuning regressed holdout prediction."""
+    if not math.isnan(base_brier) and not math.isnan(cand_brier):
+        if cand_brier > base_brier + brier_tolerance:
+            return (
+                f"holdout Brier regressed ({cand_brier:.6f} > champion {base_brier:.6f} "
+                f"+ {brier_tolerance:.6f}); keeping champion policy"
+            )
+    if not math.isnan(base_auc) and not math.isnan(cand_auc):
+        if cand_auc < base_auc - auc_tolerance:
+            return (
+                f"holdout AUC regressed ({cand_auc:.6f} < champion {base_auc:.6f} "
+                f"- {auc_tolerance:.6f}); keeping champion policy"
+            )
     return None
 
 
-def _holdout_predictor_brier(
+def _holdout_predictor_quality(
     config: AppConfig,
     model: MultiHeadModel,
     holdout_market: pd.DataFrame,
-) -> float:
-    """Primary-holdout Brier score for a multi-head predictor (lower is better)."""
+) -> tuple[float, float]:
+    """Primary-holdout Brier (lower better) and ROC-AUC (higher better) for a predictor."""
     features = FeaturePipeline(config).transform(holdout_market)
     multi = build_multi_horizon_targets(holdout_market, config.prediction)
     data = features.join(multi).dropna()
     if data.empty or model.multi_head_spec_ is None:
-        return float("nan")
+        return float("nan"), float("nan")
     structured = model.predict_structured(data[features.columns])
     horizons = list(model.multi_head_spec_.horizons)
     labels_by_h = {h: data[f"target_{h}"].to_numpy(dtype=float) for h in horizons}
@@ -164,7 +173,20 @@ def _holdout_predictor_brier(
         short_threshold=config.risk.short_threshold,
         primary_horizon=config.prediction.horizon,
     )
-    return float(metrics.get("oos_brier", float("nan")))
+    return (
+        float(metrics.get("oos_brier", float("nan"))),
+        float(metrics.get("oos_auc", float("nan"))),
+    )
+
+
+def _holdout_predictor_brier(
+    config: AppConfig,
+    model: MultiHeadModel,
+    holdout_market: pd.DataFrame,
+) -> float:
+    """Primary-holdout Brier score for a multi-head predictor (lower is better)."""
+    brier, _ = _holdout_predictor_quality(config, model, holdout_market)
+    return brier
 
 
 def train_challenger_policy(
@@ -173,7 +195,10 @@ def train_challenger_policy(
     model: MultiHeadModel | None,
 ) -> tuple[PPOPolicy, MultiHeadModel | None, TrainStats]:
     """Train a challenger PPO on ``train_market`` (forecast or embedding mode)."""
+    from epoch_ai.execution.policy.trunk_policy import warn_if_embedding_mode_unavailable
     from epoch_ai.models.tcn_model import TCNModel
+
+    warn_if_embedding_mode_unavailable(config, model)
 
     if (
         model is not None
@@ -476,10 +501,20 @@ def auto_train_and_promote_policy(
         and champion_model is not None
         and work_model is not champion_model
     ):
-        tol = promo.max_prediction_brier_regression
-        base_brier = _holdout_predictor_brier(config, champion_model, holdout_market)
-        cand_brier = _holdout_predictor_brier(config, work_model, holdout_market)
-        veto = _joint_brier_regression_reason(base_brier, cand_brier, tol)
+        tol_brier = promo.max_prediction_brier_regression
+        tol_auc = promo.max_prediction_auc_regression
+        base_brier, base_auc = _holdout_predictor_quality(
+            config, champion_model, holdout_market
+        )
+        cand_brier, cand_auc = _holdout_predictor_quality(config, work_model, holdout_market)
+        veto = _joint_prediction_regression_reason(
+            base_brier=base_brier,
+            cand_brier=cand_brier,
+            base_auc=base_auc,
+            cand_auc=cand_auc,
+            brier_tolerance=tol_brier,
+            auc_tolerance=tol_auc,
+        )
         if veto is not None:
             promote = False
             reason = veto

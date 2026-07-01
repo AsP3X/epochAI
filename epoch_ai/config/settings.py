@@ -923,6 +923,15 @@ class PolicyPromotionConfig(BaseModel):
             "amount (prevents trading gains at the cost of forecast quality)."
         ),
     )
+    max_prediction_auc_regression: float = Field(
+        default=0.02,
+        ge=0.0,
+        description=(
+            "When joint trunk fine-tuning is enabled, block policy promotion if the "
+            "challenger TCN's holdout ROC-AUC falls below the champion's by more than "
+            "this amount."
+        ),
+    )
 
 
 class RLConfig(BaseModel):

@@ -86,9 +86,16 @@ class PPOPolicy:
 
     def act(self, obs: np.ndarray, *, deterministic: bool = False) -> float:
         """Sample or mean target weight in ``[-1, 1]`` (guardrails applied downstream)."""
+        obs_arr = np.asarray(obs, dtype=np.float32).ravel()
+        if obs_arr.shape[0] != self.obs_dim:
+            raise ValueError(
+                f"Observation length {obs_arr.shape[0]} != policy obs_dim {self.obs_dim}. "
+                "The policy artifact may have been trained in a different observation mode "
+                "(forecast vs embedding) or trunk width."
+            )
         torch, _ = _require_torch()
         with torch.inference_mode():
-            h = self._features(obs)
+            h = self._features(obs_arr)
             mean = torch.tanh(self.actor_mean(h)).squeeze(-1)
             if deterministic:
                 action = mean
@@ -212,6 +219,7 @@ class PPOPolicy:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "obs_dim": self.obs_dim,
+            "observation_mode": self.config.observation_mode,
             "config": self.config.model_dump(),
             "state_dict": {
                 "body": self.body.state_dict(),
@@ -223,17 +231,38 @@ class PPOPolicy:
         torch.save(payload, path)
         meta = path.with_suffix(".json")
         meta.write_text(
-            json.dumps({"obs_dim": self.obs_dim, "open_weights": True}, indent=2),
+            json.dumps(
+                {
+                    "obs_dim": self.obs_dim,
+                    "observation_mode": self.config.observation_mode,
+                    "open_weights": True,
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
     @classmethod
-    def load(cls, path: str | Path, config: RLConfig | None = None) -> PPOPolicy:
+    def load(
+        cls,
+        path: str | Path,
+        config: RLConfig | None = None,
+        *,
+        expected_obs_dim: int | None = None,
+    ) -> PPOPolicy:
         """Load a saved policy."""
         torch, _ = _require_torch()
         payload = torch.load(path, map_location="cpu", weights_only=False)
         cfg = config or RLConfig.model_validate(payload.get("config") or {})
-        policy = cls(int(payload["obs_dim"]), cfg)
+        obs_dim = int(payload["obs_dim"])
+        if expected_obs_dim is not None and obs_dim != expected_obs_dim:
+            saved_mode = payload.get("observation_mode", "unknown")
+            raise ValueError(
+                f"Policy at {path} has obs_dim={obs_dim} (saved observation_mode="
+                f"{saved_mode!r}) but the runtime expects {expected_obs_dim} for "
+                f"rl.observation_mode={cfg.observation_mode!r}. Retrain or fix config."
+            )
+        policy = cls(obs_dim, cfg)
         state = payload["state_dict"]
         policy.body.load_state_dict(state["body"])
         policy.actor_mean.load_state_dict(state["actor_mean"])

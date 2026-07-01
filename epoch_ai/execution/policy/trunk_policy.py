@@ -12,6 +12,9 @@ from epoch_ai.execution.policy.env import TradingReplayEnv
 from epoch_ai.execution.policy.observation import embedding_observation_dim
 from epoch_ai.execution.policy.ppo_policy import PPOPolicy
 from epoch_ai.features.pipeline import FeaturePipeline
+from epoch_ai.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     # Human: embed()/trunk_dim are TCN-specific (not on MultiHeadModel/evolved_nn), so the
@@ -75,6 +78,22 @@ def build_embedding_env(
     emb = model.embed(features[list(features.columns)])
     close = market_slice.loc[features.index, "close"].astype(float)
     return TradingReplayEnv.from_embeddings(config, close, emb)
+
+
+def warn_if_embedding_mode_unavailable(
+    config: AppConfig,
+    model: object | None,
+) -> None:
+    """Log when embedding mode is configured but the champion is not a TCN."""
+    if config.rl.observation_mode != "embedding":
+        return
+    from epoch_ai.models.tcn_model import TCNModel
+
+    if model is None or not isinstance(model, TCNModel):
+        logger.warning(
+            "rl.observation_mode='embedding' requires a TCN champion; "
+            "using forecast observations for this run."
+        )
 
 
 def runtime_trunk_embedding(

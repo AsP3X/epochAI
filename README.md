@@ -47,6 +47,44 @@ operating closer to real-time.
   true`). Production **`train` requires real exchange data** and provenanced parquet caches.
 - **Clear extension paths** — incremental learning (River), live WebSocket streaming
   (ccxt.pro), MLflow tracking, vectorbt cross-checks (all optional, lazy-imported).
+- **Learned trading policy (PPO)** — default runtime backend is
+  `learned_with_baseline_fallback` (baseline when no policy artifact exists). Train on
+  OOS replay with `python -m epoch_ai train-policy`. Shared-trunk **embedding mode** (ADR
+  0009) trains the policy on the TCN trunk embedding instead of forecast summaries; joint
+  fine-tune is opt-in via `rl.trunk_frozen=false` and `rl.policy_loss_weight > 0`.
+
+## Learned policy and shared-trunk (ADR 0009)
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `trading.policy_backend` | `learned_with_baseline_fallback` | Learned policy when artifact exists; else baseline |
+| `rl.observation_mode` | `forecast` | `embedding` = TCN trunk obs (requires TCN champion) |
+| `rl.reward_mode` | `multi_bar` | Lower-noise reward over `rl.reward_horizon` bars |
+| `rl.trunk_frozen` | `true` | Stage 1: frozen trunk; Stage 2: set `false` + `policy_loss_weight` |
+| `rl.promotion.max_prediction_brier_regression` | `0.02` | Joint promote veto if holdout Brier worsens |
+| `rl.promotion.max_prediction_auc_regression` | `0.02` | Joint promote veto if holdout AUC worsens |
+
+```bash
+# Phase A: policy on real champion forecasts (after train)
+python -m epoch_ai train --bars 16000
+python -m epoch_ai train-policy --bars 6000
+
+# Stage 1 shared trunk: frozen embedding policy
+python -m epoch_ai train-policy --bars 6000 \
+  --set rl.observation_mode=embedding
+
+# Stage 2 joint fine-tune (GPU recommended)
+python -m epoch_ai train-policy --bars 6000 \
+  --set rl.observation_mode=embedding \
+  --set rl.trunk_frozen=false \
+  --set rl.policy_loss_weight=0.1
+
+# Holdout acceptance (predictor + policy benchmarks)
+python -m epoch_ai evaluate-holdout --bars 6000
+```
+
+Policy artifacts record `observation_mode` and `obs_dim`; mismatch with config raises a
+clear error at load time. Retrain after switching forecast ↔ embedding.
 
 ## Project layout
 
@@ -608,6 +646,14 @@ curve reflects the decision the system actually trades.
 ruff check .                 # lint
 pytest                       # tests
 pre-commit install           # optional local hooks (ruff + pytest)
+```
+
+Quick smoke (synthetic data; cap bars/steps for speed):
+
+```bash
+python -m epoch_ai info
+python -m epoch_ai backtest --bars 8000 --max-steps 12 \
+  --set walk_forward.initial_train_period=800
 ```
 
 CI runs **ruff** and **pytest** on every push to `master` (`.github/workflows/ci.yml`).

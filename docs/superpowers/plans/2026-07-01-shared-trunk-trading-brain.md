@@ -4,6 +4,11 @@
 
 **Goal:** Build one GPU-trainable "trading brain" that shares a single deep representation between a supervised multi-horizon price predictor and a reinforcement-learned trading policy, so the AI both forecasts price *and* discovers its own entry/exit/sizing strategies from simulated PnL.
 
+> **Implementation status (2026-07-01):** Phases 1–11 code, tests, config, and docs are
+> complete on `feature/shared-trunk-trading-brain`. **Pending GPU validation only:**
+> Milestone Gate A (forecast-mode policy baseline) and Task 10 holdout gates (frozen
+> embedding vs forecast; joint fine-tune vs Gate A without Brier/AUC regression).
+
 **Architecture:** A shared **trunk** (the existing dilated causal TCN, scaled up) produces a per-bar embedding. Two consumers read that embedding: (1) supervised **prediction heads** (per-horizon direction logit + return quantiles) trained on actual future price — the dense, low-noise signal that keeps forecasts accurate and powers the chart; (2) a **policy/value head** trained by PPO on a **multi-bar** simulated-trading reward — the signal that teaches strategy. Both gradients flow into the trunk, so learning to trade reshapes the representation while direct price supervision keeps it honest. We reach this end-state through a staged on-ramp that de-risks the RL work.
 
 **Tech Stack:** Python 3.12, PyTorch (CUDA), existing `MultiHeadModel`/`TCNModel`, `TradingReplayEnv`, PPO, Pydantic v2 config + YAML, pytest.

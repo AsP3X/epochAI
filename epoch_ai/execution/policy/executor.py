@@ -9,7 +9,11 @@ import numpy as np
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.policy.baseline import baseline_policy
 from epoch_ai.execution.policy.guardrails import apply_guardrails
-from epoch_ai.execution.policy.observation import build_runtime_observation
+from epoch_ai.execution.policy.observation import (
+    build_runtime_observation,
+    expected_policy_obs_dim,
+    validate_policy_observation,
+)
 from epoch_ai.execution.policy.ppo_policy import PPOPolicy
 from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.risk import RiskDecision, RiskManager
@@ -17,12 +21,17 @@ from epoch_ai.execution.safety import SafetyAssessment
 from epoch_ai.services.types import MultiHorizonPredictionResult
 
 
-def load_ppo_policy(config: AppConfig) -> PPOPolicy | None:
+def load_ppo_policy(
+    config: AppConfig,
+    *,
+    trunk_dim: int | None = None,
+) -> PPOPolicy | None:
     """Load the learned policy when configured and the artifact exists."""
     path = Path(config.rl.policy_path)
     if not path.exists():
         return None
-    return PPOPolicy.load(path, config.rl)
+    expected = expected_policy_obs_dim(config, trunk_dim=trunk_dim)
+    return PPOPolicy.load(path, config.rl, expected_obs_dim=expected)
 
 
 def baseline_weight(
@@ -83,6 +92,13 @@ def decide_trading_action(
             obs = build_runtime_observation(
                 config, multi, portfolio, trunk_embedding=trunk_embedding
             )
+            policy_obs_dim = getattr(policy, "obs_dim", None)
+            if policy_obs_dim is not None:
+                validate_policy_observation(
+                    policy_obs_dim,
+                    obs,
+                    observation_mode=config.rl.observation_mode,
+                )
             learned = policy.act(obs, deterministic=True)
             cap = config.trading.max_position_fraction * config.risk.max_leverage
             target = float(max(-cap, min(cap, learned * cap)))

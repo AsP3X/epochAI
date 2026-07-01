@@ -324,6 +324,7 @@ rl:
     require_beat_buy_hold: false   # report-only: buy-and-hold comparison logged, not gated
     min_absolute_metric: 0.0       # absolute floor on the gate metric (blocks money-losing promotes, incl. bootstrap)
     max_prediction_brier_regression: 0.02  # joint trunk: max allowed holdout Brier increase vs champion
+    max_prediction_auc_regression: 0.02     # joint trunk: max allowed holdout AUC decrease vs champion
 
 # Live runtime: trained model + live data -> predictions -> trades
 execution:

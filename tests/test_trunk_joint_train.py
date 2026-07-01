@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from epoch_ai.learning.policy_promotion import _joint_brier_regression_reason
+from epoch_ai.learning.policy_promotion import _joint_prediction_regression_reason
 from epoch_ai.learning.trunk_joint_train import joint_trunk_enabled, train_trunk_policy
 from tests.test_policy_env import _policy_config
 
@@ -29,11 +29,25 @@ def test_joint_trunk_enabled_when_stage_two_configured():
     assert joint_trunk_enabled(config) is True
 
 
-def test_joint_brier_regression_reason():
-    assert _joint_brier_regression_reason(0.20, 0.21, 0.02) is None
-    reason = _joint_brier_regression_reason(0.20, 0.25, 0.02)
+def test_joint_prediction_regression_reason():
+    assert _joint_prediction_regression_reason(
+        base_brier=0.20,
+        cand_brier=0.21,
+        base_auc=0.60,
+        cand_auc=0.59,
+        brier_tolerance=0.02,
+        auc_tolerance=0.02,
+    ) is None
+    reason = _joint_prediction_regression_reason(
+        base_brier=0.20,
+        cand_brier=0.25,
+        base_auc=0.60,
+        cand_auc=0.59,
+        brier_tolerance=0.02,
+        auc_tolerance=0.02,
+    )
     assert reason is not None
-    assert "regressed" in reason
+    assert "Brier" in reason
 
 
 def test_train_trunk_policy_frozen_skips_supervised_steps(market, small_config):

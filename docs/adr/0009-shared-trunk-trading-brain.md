@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted (2026-07-01) — implementation in progress via
-`docs/superpowers/plans/2026-07-01-shared-trunk-trading-brain.md`. Supersedes the strict
+Accepted (2026-07-01) — **implemented** on branch `feature/shared-trunk-trading-brain`.
+GPU Milestone Gate A / Task 10 holdout validation remains pending (see plan). Supersedes the strict
 prediction/execution isolation of ADR 0008 **for the learned trading path only**; the
 supervised predictor remains independently trainable and the boundary still holds for the
 `threshold`/`baseline` backends.

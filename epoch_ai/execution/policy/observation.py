@@ -26,6 +26,32 @@ def embedding_observation_dim(trunk_dim: int) -> int:
     return trunk_dim + 4
 
 
+def expected_policy_obs_dim(
+    config: AppConfig,
+    *,
+    trunk_dim: int | None = None,
+) -> int:
+    """Expected flat observation size for the configured policy observation mode."""
+    if config.rl.observation_mode == "embedding" and trunk_dim is not None:
+        return embedding_observation_dim(trunk_dim)
+    return observation_dim(config)
+
+
+def validate_policy_observation(
+    policy_obs_dim: int,
+    obs: np.ndarray,
+    *,
+    observation_mode: str,
+) -> None:
+    """Raise when a live/replay observation does not match the loaded policy."""
+    if len(obs) != policy_obs_dim:
+        raise ValueError(
+            f"Policy observation length {len(obs)} != policy obs_dim {policy_obs_dim} "
+            f"(rl.observation_mode={observation_mode!r}). Retrain the policy or align "
+            "observation_mode with the artifact (forecast vs embedding)."
+        )
+
+
 def build_embedding_observation(
     embedding_row: np.ndarray,
     portfolio: PortfolioState,

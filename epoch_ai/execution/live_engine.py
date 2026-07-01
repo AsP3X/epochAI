@@ -92,9 +92,7 @@ class LiveTradingEngine:
         self._tick_count = 0
         self._fill_count = 0
         self._calibration_gate_passed = True
-        self._ppo: PPOPolicy | None = (
-            load_ppo_policy(config) if config.trading.policy_backend.startswith("learned") else None
-        )
+        self._ppo: PPOPolicy | None = None
         self._action_log = ActionLog(config.trading.action_log_path)
         self._safety = SafetyScorer(config.safety) if config.safety.enabled else None
 
@@ -127,7 +125,7 @@ class LiveTradingEngine:
             min_accuracy=exec_cfg.calibration_min_accuracy,
             min_samples=exec_cfg.calibration_min_samples,
         )
-        return cls(
+        engine = cls(
             config,
             runtime,
             executor,
@@ -138,6 +136,15 @@ class LiveTradingEngine:
             calibration=calibration,
             metrics=metrics,
         )
+        if config.trading.policy_backend.startswith("learned"):
+            from epoch_ai.execution.policy.trunk_policy import warn_if_embedding_mode_unavailable
+            from epoch_ai.models.tcn_model import TCNModel
+
+            model = runtime._require_model()
+            warn_if_embedding_mode_unavailable(config, model)
+            trunk_dim = model.trunk_dim if isinstance(model, TCNModel) else None
+            engine._ppo = load_ppo_policy(config, trunk_dim=trunk_dim)
+        return engine
 
     @property
     def min_buffer_bars(self) -> int:

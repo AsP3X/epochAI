@@ -100,6 +100,16 @@ def run_bar_loop(
         raise ValueError(f"start_pos {start_pos} out of range for {len(data)} rows.")
 
     train_end = start_pos
+    trunk_dim: int | None = None
+    if model is not None:
+        from epoch_ai.models.tcn_model import TCNModel
+
+        if isinstance(model, TCNModel):
+            trunk_dim = model.trunk_dim
+        from epoch_ai.execution.policy.trunk_policy import warn_if_embedding_mode_unavailable
+
+        warn_if_embedding_mode_unavailable(config, model)
+
     if model is None:
         model = build_model(config.model, task=config.prediction.task)
         model.fit(data[feature_cols].iloc[:train_end], data["target"].iloc[:train_end])
@@ -121,7 +131,9 @@ def run_bar_loop(
         store=store,
         model_version=model_version,
         pending=[] if store is not None else None,
-        ppo=load_ppo_policy(config) if config.trading.policy_backend.startswith("learned") else None,
+        ppo=load_ppo_policy(config, trunk_dim=trunk_dim)
+        if config.trading.policy_backend.startswith("learned")
+        else None,
         action_log=ActionLog(config.trading.action_log_path),
     )
 
