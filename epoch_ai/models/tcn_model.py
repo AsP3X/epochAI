@@ -97,10 +97,16 @@ def _build_network(n_features: int, cfg, n_outputs: int):
             self.network = nn.Sequential(*blocks)
             self.head = nn.Linear(in_ch, n_outputs)
 
-        def forward(self, x):  # x: (B, C=F, L)
+        # Human: split the pre-head trunk activation into its own method so callers can
+        #        reuse the shared temporal embedding without the head. ``forward`` still
+        #        composes embed + head, so its output stays numerically identical.
+        # Agent: embed RETURNS (B, channels[-1]) == last causal step; forward = head(embed).
+        def embed(self, x):  # x: (B, C=F, L) -> (B, channels[-1])
             h = self.network(x)
-            last = h[:, :, -1]
-            return self.head(last)
+            return h[:, :, -1]
+
+        def forward(self, x):  # x: (B, C=F, L)
+            return self.head(self.embed(x))
 
     return _TCNNet()
 
@@ -150,6 +156,15 @@ class TCNModel(MultiHeadModel):
         if self.arch_ is not None:
             return int(self.arch_["lookback"])
         return int(self.config.tcn.lookback)
+
+    @property
+    def trunk_dim(self) -> int:
+        """Width of the pre-head trunk embedding (== ``channels[-1]``).
+
+        Sourced from the saved ``arch_`` when loaded, else the live config, so it always
+        matches the network that actually produces :meth:`embed`.
+        """
+        return int(self._arch_namespace().channels[-1])
 
     def _arch_namespace(self) -> SimpleNamespace:
         """Network-shape params (from saved ``arch_`` when present, else live config)."""
@@ -511,11 +526,17 @@ class TCNModel(MultiHeadModel):
             self._infer_device = device
         return self._infer_model
 
-    def _forward_frame(self, x: pd.DataFrame) -> np.ndarray:
-        """Return raw logits (``n_rows x n_outputs``) for every row of ``x``.
+    def _forward_frame(self, x: pd.DataFrame, *, embedding: bool = False) -> np.ndarray:
+        """Return per-row logits (``n_rows x n_outputs``) or the trunk embedding.
 
         ``x`` should include up to ``sequence_lookback - 1`` leading context rows; the
         caller trims them. Rows whose window extends before the frame are zero-padded.
+
+        When ``embedding`` is False (default) this returns raw head logits, so all
+        existing callers (``predict``, ``predict_logits``, ``predict_structured``,
+        calibration, importance) keep identical behavior. When True it instead returns
+        ``net.embed(windows)`` -> shape ``(n_rows, channels[-1])``, reusing the same
+        causal windowing so the embedding stays walk-forward safe.
         """
         torch = _require_torch()
         if self.feature_names_ is not None:
@@ -534,7 +555,9 @@ class TCNModel(MultiHeadModel):
                 ib = idx_all[start : start + batch]
                 windows = self._gather_windows(x_dev, ib, lookback)
                 with torch.autocast(device_type="cuda", enabled=use_amp):
-                    parts.append(net(windows).float().cpu().numpy())
+                    # Agent: embed path skips the head; forward path is unchanged.
+                    out = net.embed(windows) if embedding else net(windows)
+                    parts.append(out.float().cpu().numpy())
         return np.concatenate(parts, axis=0)
 
     def predict(self, x: pd.DataFrame) -> np.ndarray:
@@ -575,6 +598,17 @@ class TCNModel(MultiHeadModel):
                 if h == self.primary_horizon_ and isinstance(block.get("p_up"), np.ndarray):
                     block["p_up"] = self.calibrator_.transform(block["p_up"])
         return parsed
+
+    def embed(self, x: pd.DataFrame) -> np.ndarray:
+        """Return the causal trunk embedding ``(n_rows, trunk_dim)`` for every row.
+
+        ``trunk_dim == channels[-1]`` (from ``arch_`` when loaded). This is the pre-head
+        activation the head consumes; it reuses the same causal windowing as prediction,
+        so row ``i`` depends only on rows ``<= i``. Unlike :meth:`predict_structured`,
+        this does **not** require a multi-head spec -- it works for any trained TCN.
+        """
+        # Agent: RETURNS (n_rows, channels[-1]); CAUSAL via _gather_windows; head skipped.
+        return self._forward_frame(x, embedding=True)
 
     def seed_payload(self) -> dict:
         """Warm-start the next retrain from this champion's weights."""
