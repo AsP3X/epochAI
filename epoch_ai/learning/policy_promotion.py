@@ -16,10 +16,14 @@ from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.execution.policy.env import TradingReplayEnv
 from epoch_ai.execution.policy.executor import baseline_weight
 from epoch_ai.execution.policy.guardrails import apply_guardrails
-from epoch_ai.execution.policy.observation import build_observation, observation_dim
-from epoch_ai.execution.policy.ppo_policy import PPOPolicy
-from epoch_ai.features.pipeline import FeaturePipeline
+from epoch_ai.execution.policy.observation import (
+    observation_dim,
+    policy_env_observation,
+)
+from epoch_ai.execution.policy.ppo_policy import PPOPolicy, TrainStats
+from epoch_ai.features.pipeline import FeaturePipeline, build_multi_horizon_targets
 from epoch_ai.learning.adaptation import resolved_holdout_bars
+from epoch_ai.learning.step_metrics import multi_horizon_classification_step_metrics
 from epoch_ai.models.base import MultiHeadModel
 from epoch_ai.models.registry import ModelRegistry
 from epoch_ai.utils.logging import get_logger
@@ -83,6 +87,108 @@ def _build_policy_env_from_model(
     close = market_slice.loc[features.index, "close"].astype(float)
     horizons = list(model.multi_head_spec_.horizons)
     return TradingReplayEnv.from_forecasts(config, close, structured, horizons)
+
+
+def _build_policy_env(
+    config: AppConfig,
+    market_slice: pd.DataFrame,
+    model: MultiHeadModel | None,
+) -> TradingReplayEnv:
+    """Build a training/eval replay env (forecast summary or trunk embedding)."""
+    if model is not None and config.rl.observation_mode == "embedding":
+        from epoch_ai.execution.policy.trunk_policy import build_embedding_env
+        from epoch_ai.models.tcn_model import TCNModel
+
+        if isinstance(model, TCNModel):
+            return build_embedding_env(config, market_slice, model)
+        logger.warning(
+            "rl.observation_mode='embedding' requires a TCN champion; using forecast env."
+        )
+    if model is not None:
+        return _build_policy_env_from_model(config, market_slice, model)
+    return TradingReplayEnv.from_market(
+        config, pd.DataFrame({"close": market_slice["close"].astype(float)})
+    )
+
+
+def _build_challenger_policy(
+    config: AppConfig,
+    model: MultiHeadModel | None,
+) -> PPOPolicy:
+    """Instantiate a PPO policy sized for the configured observation mode."""
+    if model is not None and config.rl.observation_mode == "embedding":
+        from epoch_ai.execution.policy.trunk_policy import build_trunk_policy
+        from epoch_ai.models.tcn_model import TCNModel
+
+        if isinstance(model, TCNModel):
+            return build_trunk_policy(model.trunk_dim, config)
+    return PPOPolicy(observation_dim(config), config.rl)
+
+
+def _joint_brier_regression_reason(
+    base_brier: float,
+    cand_brier: float,
+    tolerance: float,
+) -> str | None:
+    """Return a veto reason when joint trunk fine-tuning regressed holdout Brier."""
+    if math.isnan(base_brier) or math.isnan(cand_brier):
+        return None
+    if cand_brier > base_brier + tolerance:
+        return (
+            f"holdout Brier regressed ({cand_brier:.6f} > champion {base_brier:.6f} "
+            f"+ {tolerance:.6f}); keeping champion policy"
+        )
+    return None
+
+
+def _holdout_predictor_brier(
+    config: AppConfig,
+    model: MultiHeadModel,
+    holdout_market: pd.DataFrame,
+) -> float:
+    """Primary-holdout Brier score for a multi-head predictor (lower is better)."""
+    features = FeaturePipeline(config).transform(holdout_market)
+    multi = build_multi_horizon_targets(holdout_market, config.prediction)
+    data = features.join(multi).dropna()
+    if data.empty or model.multi_head_spec_ is None:
+        return float("nan")
+    structured = model.predict_structured(data[features.columns])
+    horizons = list(model.multi_head_spec_.horizons)
+    labels_by_h = {h: data[f"target_{h}"].to_numpy(dtype=float) for h in horizons}
+    returns_by_h = {h: data[f"ret_{h}"].to_numpy(dtype=float) for h in horizons}
+    metrics = multi_horizon_classification_step_metrics(
+        structured,
+        labels_by_h,
+        returns_by_h,
+        long_threshold=config.risk.long_threshold,
+        short_threshold=config.risk.short_threshold,
+        primary_horizon=config.prediction.horizon,
+    )
+    return float(metrics.get("oos_brier", float("nan")))
+
+
+def train_challenger_policy(
+    config: AppConfig,
+    train_market: pd.DataFrame,
+    model: MultiHeadModel | None,
+) -> tuple[PPOPolicy, MultiHeadModel | None, TrainStats]:
+    """Train a challenger PPO on ``train_market`` (forecast or embedding mode)."""
+    from epoch_ai.models.tcn_model import TCNModel
+
+    if (
+        model is not None
+        and config.rl.observation_mode == "embedding"
+        and isinstance(model, TCNModel)
+    ):
+        from epoch_ai.learning.trunk_joint_train import train_trunk_policy
+
+        policy, work_model, stats = train_trunk_policy(config, train_market, model)
+        return policy, work_model, stats
+
+    env = _build_policy_env(config, train_market, model)
+    policy = _build_challenger_policy(config, model)
+    stats = policy.train(env)
+    return policy, model, stats
 
 
 @dataclass(slots=True)
@@ -293,19 +399,19 @@ def auto_train_and_promote_policy(
     holdout_market = market.iloc[-eval_bars:]
     train_market = market.iloc[: len(market) - eval_bars]
 
-    if champion_model is not None:
-        train_env = _build_policy_env_from_model(config, train_market, champion_model)
+    challenger, work_model, _train_stats = train_challenger_policy(
+        config, train_market, champion_model
+    )
+    eval_model = work_model if work_model is not None else champion_model
+
+    if eval_model is not None:
 
         def make_eval_env() -> TradingReplayEnv:
-            return _build_policy_env_from_model(config, holdout_market, champion_model)
+            return _build_policy_env(config, holdout_market, eval_model)
     else:
-        train_env = TradingReplayEnv.from_market(config, pd.DataFrame({"close": train}))
 
         def make_eval_env() -> TradingReplayEnv:
             return TradingReplayEnv.from_market(config, pd.DataFrame({"close": holdout}))
-
-    challenger = PPOPolicy(observation_dim(config), config.rl)
-    challenger.train(train_env)
 
     challenger_path = Path(config.rl.policy_path)
     challenger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -319,7 +425,7 @@ def auto_train_and_promote_policy(
         return cap
 
     def ppo_fn(env: TradingReplayEnv) -> float:
-        obs = build_observation(env.current_forecast(), env.portfolio, config)
+        obs = policy_env_observation(env, config)
         cap = config.trading.max_position_fraction * config.risk.max_leverage
         return float(challenger.act(obs, deterministic=True) * cap)
 
@@ -339,7 +445,7 @@ def auto_train_and_promote_policy(
             champion = PPOPolicy.load(champion_path, config.rl)
 
             def champion_fn(env: TradingReplayEnv) -> float:
-                obs = build_observation(env.current_forecast(), env.portfolio, config)
+                obs = policy_env_observation(env, config)
                 cap = config.trading.max_position_fraction * config.risk.max_leverage
                 return float(champion.act(obs, deterministic=True) * cap)
 
@@ -362,6 +468,21 @@ def auto_train_and_promote_policy(
         require_beat_buy_hold=promo.require_beat_buy_hold,
         min_absolute_metric=promo.min_absolute_metric,
     )
+
+    # Human: joint trunk fine-tune must not promote if holdout Brier regresses beyond tolerance.
+    if (
+        promote
+        and work_model is not None
+        and champion_model is not None
+        and work_model is not champion_model
+    ):
+        tol = promo.max_prediction_brier_regression
+        base_brier = _holdout_predictor_brier(config, champion_model, holdout_market)
+        cand_brier = _holdout_predictor_brier(config, work_model, holdout_market)
+        veto = _joint_brier_regression_reason(base_brier, cand_brier, tol)
+        if veto is not None:
+            promote = False
+            reason = veto
 
     if promote:
         champion_path.parent.mkdir(parents=True, exist_ok=True)

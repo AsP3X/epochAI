@@ -57,3 +57,9 @@ The PPO policy is optional (`rl.enabled`, `train-policy`, `run --policy learned`
   plumbing-only.
 - Open-weights policy: predictor bundle + RL policy are plain publishable files.
 - Real-money order routing remains intentionally unimplemented; paper-only default.
+
+## See also
+
+- **ADR 0009** — shared-trunk multi-task brain (A.5): TCN `embed()` observations,
+  staged trunk policy training, and joint fine-tune with Brier regression gate
+  (`docs/adr/0009-shared-trunk-trading-brain.md`).

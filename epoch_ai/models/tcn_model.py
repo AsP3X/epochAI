@@ -610,6 +610,90 @@ class TCNModel(MultiHeadModel):
         # Agent: RETURNS (n_rows, channels[-1]); CAUSAL via _gather_windows; head skipped.
         return self._forward_frame(x, embedding=True)
 
+    def supervised_gradient_step(
+        self,
+        x: pd.DataFrame,
+        multi_targets: pd.DataFrame,
+        *,
+        steps: int = 1,
+        batch_size: int | None = None,
+        aux_weight: float = 1.0,
+    ) -> float:
+        """Run one or more causal supervised mini-batch steps (joint trunk fine-tuning).
+
+        Keeps the multi-head prediction loss active so the trunk stays anchored to price
+        supervision while the policy head learns from RL. Invalidates the inference cache
+        so subsequent :meth:`embed` / :meth:`predict` reflect the updated weights.
+
+        Args:
+            x: Feature matrix aligned with ``multi_targets``.
+            multi_targets: Per-horizon target columns (``ret_*``, ``target_*``).
+            steps: Number of random mini-batch Adam steps.
+            batch_size: Mini-batch size (defaults to ``config.tcn.batch_size``).
+            aux_weight: Scales the supervised loss (``config.rl.prediction_aux_weight``).
+
+        Returns:
+            Mean supervised loss over the steps (0.0 when untrained or aux_weight is 0).
+        """
+        if aux_weight <= 0.0 or steps < 1:
+            return 0.0
+        if self.state_dict_ is None or self.multi_head_spec_ is None:
+            raise RuntimeError("supervised_gradient_step requires a trained multi-head TCN.")
+        if len(x) != len(multi_targets):
+            raise ValueError("x and multi_targets must align.")
+
+        torch = _require_torch()
+        mh = self.multi_head_spec_
+        device = resolve_device(self.config)
+        configure_cuda_runtime(device, self.config)
+        tcn_cfg = self.config.tcn
+        batch = int(batch_size or tcn_cfg.batch_size)
+        lookback = self.sequence_lookback
+
+        if self.feature_names_ is not None:
+            x = x[self.feature_names_]
+        x_scaled = self.scaler_.transform(x.to_numpy(dtype=np.float64))  # type: ignore[union-attr]
+        y_arr = targets_to_matrix(multi_targets, mh).astype(np.float32)
+
+        x_dev = torch.from_numpy(x_scaled).float().to(device)
+        y_dev = torch.from_numpy(y_arr).float().to(device)
+        n_rows = len(x_scaled)
+        if n_rows < lookback + 1:
+            return 0.0
+
+        n_out = mh.n_outputs
+        net = _build_network(x_scaled.shape[1], self._arch_namespace(), n_out).to(device)
+        net.load_state_dict(self.state_dict_)  # type: ignore[arg-type]
+        net.train()
+        optimizer = torch.optim.Adam(
+            net.parameters(),
+            lr=tcn_cfg.learning_rate * aux_weight,
+            weight_decay=tcn_cfg.weight_decay,
+        )
+        use_amp = bool(tcn_cfg.mixed_precision and device.type == "cuda")
+        losses: list[float] = []
+        rng = np.random.default_rng()
+
+        for _ in range(steps):
+            size = min(batch, n_rows)
+            idx = torch.as_tensor(rng.integers(0, n_rows, size=size), device=device)
+            optimizer.zero_grad(set_to_none=True)
+            windows = self._gather_windows(x_dev, idx, lookback)
+            yb = y_dev[idx]
+            with torch.autocast(device_type="cuda", enabled=use_amp):
+                logits = net(windows)
+                loss = multi_head_train_loss(logits, yb, mh)
+            loss.backward()
+            optimizer.step()
+            losses.append(float(loss.detach().cpu().numpy()))
+
+        self.state_dict_ = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+        self._infer_model = None
+        self._infer_device = None
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        return float(np.mean(losses)) if losses else 0.0
+
     def seed_payload(self) -> dict:
         """Warm-start the next retrain from this champion's weights."""
         if self.state_dict_ is None:

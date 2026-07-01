@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,8 +97,19 @@ class PPOPolicy:
                 action = torch.clamp(mean + std * torch.randn_like(mean), -1.0, 1.0)
             return float(action.cpu().numpy().reshape(-1)[0])
 
-    def train(self, env: TradingReplayEnv) -> TrainStats:
-        """Run PPO updates on a replay environment."""
+    def train(
+        self,
+        env: TradingReplayEnv,
+        *,
+        on_update: Callable[[int, TradingReplayEnv], None] | None = None,
+    ) -> TrainStats:
+        """Run PPO updates on a replay environment.
+
+        Args:
+            on_update: Optional callback invoked after each PPO update with
+                ``(update_index, env)``. Used by joint trunk fine-tuning to refresh
+                embeddings or run a supervised auxiliary step on the shared TCN.
+        """
         torch, _ = _require_torch()
         cfg = self.config
         rewards: list[float] = []
@@ -134,6 +146,8 @@ class PPOPolicy:
                 obs = next_obs if not done else env.reset()
 
             self._ppo_update(obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf)
+            if on_update is not None:
+                on_update(update, env)
             if (update + 1) % max(1, cfg.total_updates // 5) == 0:
                 logger.info(
                     "PPO update %d/%d mean_rollout_reward=%.6f equity=%.2f",

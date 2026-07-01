@@ -436,6 +436,11 @@ def test_rl_reward_config_defaults():
     assert cfg.reward_mode in {"per_bar", "multi_bar"}
     assert cfg.reward_horizon >= 1
     assert cfg.turnover_penalty >= 0.0
+    assert cfg.trunk_frozen is True
+    assert cfg.policy_loss_weight == 0.0
+    assert cfg.prediction_aux_weight > 0.0
+    assert cfg.supervised_aux_steps >= 1
+    assert cfg.promotion.max_prediction_brier_regression >= 0.0
 
 
 def test_rl_reward_config_rejects_invalid_values():

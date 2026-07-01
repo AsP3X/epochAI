@@ -46,6 +46,20 @@ def build_embedding_observation(
     return np.asarray(parts, dtype=np.float32)
 
 
+def policy_env_observation(
+    env,
+    config: AppConfig,
+) -> np.ndarray:
+    """Build the policy observation vector for a replay env at its current bar.
+
+    Matches the training path: embedding mode uses the trunk row at ``env._pos`` when
+    ``env.embeddings`` is set; otherwise the per-horizon forecast summary.
+    """
+    if config.rl.observation_mode == "embedding" and env.embeddings is not None:
+        return build_embedding_observation(env.embeddings[env._pos], env.portfolio, config)
+    return build_observation(env.current_forecast(), env.portfolio, config)
+
+
 def build_observation(
     multi: MultiHorizonPredictionResult | None,
     portfolio: PortfolioState,

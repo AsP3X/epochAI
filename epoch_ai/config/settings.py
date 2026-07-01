@@ -914,6 +914,15 @@ class PolicyPromotionConfig(BaseModel):
             "promoting a money-losing policy."
         ),
     )
+    max_prediction_brier_regression: float = Field(
+        default=0.02,
+        ge=0.0,
+        description=(
+            "When joint trunk fine-tuning is enabled, block policy promotion if the "
+            "challenger TCN's holdout Brier exceeds the champion's by more than this "
+            "amount (prevents trading gains at the cost of forecast quality)."
+        ),
+    )
 
 
 class RLConfig(BaseModel):
@@ -951,6 +960,33 @@ class RLConfig(BaseModel):
     observation_mode: Literal["forecast", "embedding"] = Field(
         default="forecast",
         description="forecast: per-horizon forecast summary observation. embedding: the shared TCN trunk embedding (A.5 shared-trunk policy).",
+    )
+    trunk_frozen: bool = Field(
+        default=True,
+        description=(
+            "When observation_mode='embedding', keep the TCN trunk frozen during policy "
+            "training (Stage 1). Set False with policy_loss_weight > 0 to enable joint "
+            "trunk fine-tuning (Stage 2)."
+        ),
+    )
+    policy_loss_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Weight for joint trunk fine-tuning. When > 0 and trunk_frozen=False, "
+            "alternates PPO updates with supervised auxiliary steps on the shared TCN "
+            "trunk (prediction heads stay active as an anchor)."
+        ),
+    )
+    prediction_aux_weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Scale for the supervised multi-head loss during joint trunk steps.",
+    )
+    supervised_aux_steps: int = Field(
+        default=1,
+        ge=1,
+        description="Supervised mini-batch steps on the TCN trunk after each PPO update (joint mode).",
     )
     device: Literal["auto", "cpu", "cuda"] = "auto"
     promotion: PolicyPromotionConfig = Field(default_factory=PolicyPromotionConfig)

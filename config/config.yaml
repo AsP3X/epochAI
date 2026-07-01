@@ -309,6 +309,10 @@ rl:
   reward_horizon: 12            # bars over which a decision's PnL is accumulated (multi_bar mode)
   turnover_penalty: 0.0         # penalty per unit of absolute position-weight change (discourages churn)
   observation_mode: forecast    # forecast: per-horizon forecast summary obs. embedding: shared TCN trunk embedding (A.5 shared-trunk policy)
+  trunk_frozen: true             # Stage 1: freeze TCN trunk during policy train; set false + policy_loss_weight>0 for joint fine-tune
+  policy_loss_weight: 0.0        # >0 with trunk_frozen=false enables joint trunk fine-tuning (Stage 2)
+  prediction_aux_weight: 1.0     # scale supervised multi-head loss during joint trunk steps
+  supervised_aux_steps: 1        # supervised mini-batch steps per PPO update (joint mode)
   device: auto
   promotion:
     enabled: true
@@ -319,6 +323,7 @@ rl:
     require_beat_baseline: false   # report-only: baseline comparison logged, not gated
     require_beat_buy_hold: false   # report-only: buy-and-hold comparison logged, not gated
     min_absolute_metric: 0.0       # absolute floor on the gate metric (blocks money-losing promotes, incl. bootstrap)
+    max_prediction_brier_regression: 0.02  # joint trunk: max allowed holdout Brier increase vs champion
 
 # Live runtime: trained model + live data -> predictions -> trades
 execution:
