@@ -11,7 +11,7 @@ from epoch_ai.config.settings import AppConfig
 from epoch_ai.data.downloader import HistoricalDownloader
 from epoch_ai.execution.policy.env import TradingReplayEnv
 from epoch_ai.execution.policy.executor import baseline_weight
-from epoch_ai.execution.policy.observation import build_observation
+from epoch_ai.execution.policy.observation import policy_env_observation
 from epoch_ai.execution.policy.ppo_policy import PPOPolicy
 from epoch_ai.features.pipeline import FeaturePipeline, build_multi_horizon_targets, build_target
 from epoch_ai.learning.adaptation import resolved_holdout_bars
@@ -56,9 +56,11 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
     #        price-only proxy). horizons aligned to ``structured``; close aligned to ``data``.
     structured: dict[int, dict[str, object]] | None = None
     real_horizons: list[int] = []
+    loaded_model: MultiHeadModel | None = None
     registry = ModelRegistry(config.model.model_dir)
     try:
         model, _ = registry.load(None, config.model, task=config.prediction.task)
+        loaded_model = model if isinstance(model, MultiHeadModel) else None
         if isinstance(model, MultiHeadModel) and model.multi_head_spec_ is not None:
             structured = model.predict_structured(data[features.columns])
             horizons = model.multi_head_spec_.horizons
@@ -87,16 +89,28 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
         predictor_metrics = {}
 
     # Human: build a fresh replay env for each benchmark run. With a usable multi-head
-    #        model we score the policy on its real per-bar forecasts; otherwise we fall
-    #        back to the price-only proxy env (no model available).
-    # Agent: CAUSAL real path via from_forecasts (return shifted -1); close aligned to data rows.
+    #        model we score the policy on its real per-bar forecasts or trunk embeddings;
+    #        otherwise we fall back to the price-only proxy env (no model available).
+    # Agent: CAUSAL real path via from_forecasts/from_embeddings (return shifted -1).
+    tcn_model = None
     if structured is not None and real_horizons:
         close_for_env = holdout_market.loc[data.index, "close"].astype(float)
+        from epoch_ai.models.tcn_model import TCNModel
 
-        def make_env() -> TradingReplayEnv:
-            return TradingReplayEnv.from_forecasts(
-                config, close_for_env, structured, real_horizons
-            )
+        if isinstance(loaded_model, TCNModel):
+            tcn_model = loaded_model
+
+        if config.rl.observation_mode == "embedding" and tcn_model is not None:
+            from epoch_ai.execution.policy.trunk_policy import build_embedding_env
+
+            def make_env() -> TradingReplayEnv:
+                return build_embedding_env(config, holdout_market, tcn_model)
+        else:
+
+            def make_env() -> TradingReplayEnv:
+                return TradingReplayEnv.from_forecasts(
+                    config, close_for_env, structured, real_horizons
+                )
     else:
         holdout_df = pd.DataFrame({"close": holdout_market["close"]})
 
@@ -119,7 +133,7 @@ def evaluate_holdout(config: AppConfig, *, n_bars: int | None = None) -> Accepta
         cap = config.trading.max_position_fraction * config.risk.max_leverage
 
         def ppo_fn(env: TradingReplayEnv) -> float:
-            obs = build_observation(env.current_forecast(), env.portfolio, config)
+            obs = policy_env_observation(env, config)
             return float(policy.act(obs, deterministic=True) * cap)
 
         replay = replay_metrics(make_env(), ppo_fn)

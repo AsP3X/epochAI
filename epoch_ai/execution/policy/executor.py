@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.policy.baseline import baseline_policy
 from epoch_ai.execution.policy.guardrails import apply_guardrails
-from epoch_ai.execution.policy.observation import build_observation
+from epoch_ai.execution.policy.observation import build_runtime_observation
 from epoch_ai.execution.policy.ppo_policy import PPOPolicy
 from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.risk import RiskDecision, RiskManager
@@ -58,6 +60,7 @@ def decide_trading_action(
     portfolio: PortfolioState,
     ppo: PPOPolicy | None = None,
     safety: SafetyAssessment | None = None,
+    trunk_embedding: np.ndarray | None = None,
 ) -> RiskDecision:
     """Choose a sized position using threshold, baseline, or learned policy."""
     backend = config.trading.policy_backend
@@ -77,7 +80,9 @@ def decide_trading_action(
     if backend in {"learned", "learned_with_baseline_fallback"}:
         policy = ppo or load_ppo_policy(config)
         if policy is not None:
-            obs = build_observation(multi, portfolio, config)
+            obs = build_runtime_observation(
+                config, multi, portfolio, trunk_embedding=trunk_embedding
+            )
             learned = policy.act(obs, deterministic=True)
             cap = config.trading.max_position_fraction * config.risk.max_leverage
             target = float(max(-cap, min(cap, learned * cap)))

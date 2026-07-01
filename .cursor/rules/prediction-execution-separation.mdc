@@ -33,3 +33,12 @@ epochAI deliberately separates **what the model believes** from **what to do abo
 - Logging **context** at outcome time (volatility during hold period) for analysis—not as training features unless specified.
 
 Any cross-boundary change requires tests in **both** affected areas and an ADR-level comment in the PR/summary explaining the new coupling.
+
+## Shared-trunk learned path (ADR 0009)
+
+The **A.5 shared-trunk** policy deliberately merges prediction and execution
+representations for the **learned PPO path only**: the TCN trunk embedding feeds
+the policy head while supervised multi-head losses anchor the trunk during joint
+fine-tune. This is authorized in ADR 0009 and does **not** change the rule that
+supervised walk-forward training labels come from market outcomes, not simulated
+PnL. See `docs/adr/0009-shared-trunk-trading-brain.md`.

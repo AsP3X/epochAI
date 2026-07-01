@@ -190,6 +190,11 @@ class LiveTradingEngine:
         if self._safety is not None and pred.features:
             safety = self._safety.assess(pd.Series(pred.features))
         if self._portfolio is not None:
+            trunk_emb = (
+                self.runtime.trunk_embedding_for_market(market)
+                if self._ppo is not None
+                else None
+            )
             pred.decision = decide_trading_action(
                 self.config,
                 raw_prediction=pred.raw_prediction,
@@ -197,6 +202,7 @@ class LiveTradingEngine:
                 portfolio=self._portfolio,
                 ppo=self._ppo,
                 safety=safety,
+                trunk_embedding=trunk_emb,
             )
 
         halted = self.kill_switch.is_halted()

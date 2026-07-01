@@ -11,6 +11,7 @@ from epoch_ai.execution.action_log import ActionLog
 from epoch_ai.execution.paper_trader import PaperTrader
 from epoch_ai.execution.policy.executor import decide_trading_action, load_ppo_policy
 from epoch_ai.execution.policy.ppo_policy import PPOPolicy
+from epoch_ai.execution.policy.trunk_policy import runtime_trunk_embedding
 from epoch_ai.execution.portfolio_state import PortfolioState
 from epoch_ai.execution.risk import RiskManager
 from epoch_ai.execution.safety import SafetyScorer
@@ -164,6 +165,9 @@ def run_bar_loop(
                 horizon_label_fn=config.prediction.horizon_label,
                 bar_minutes=timeframe_to_minutes(config.timeframe),
             )
+        trunk_emb = None
+        if ctx.ppo is not None:
+            trunk_emb = runtime_trunk_embedding(config, ctx.model, model_in)
         decision = decide_trading_action(
             config,
             raw_prediction=raw_pred,
@@ -171,6 +175,7 @@ def run_bar_loop(
             portfolio=ctx.portfolio,
             ppo=ctx.ppo,
             safety=safety,
+            trunk_embedding=trunk_emb,
         )
         prev_equity = ctx.trader.equity
         fill = ctx.trader.rebalance(str(ts), price, decision)

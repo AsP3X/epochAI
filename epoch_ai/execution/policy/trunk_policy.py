@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
@@ -74,3 +75,23 @@ def build_embedding_env(
     emb = model.embed(features[list(features.columns)])
     close = market_slice.loc[features.index, "close"].astype(float)
     return TradingReplayEnv.from_embeddings(config, close, emb)
+
+
+def runtime_trunk_embedding(
+    config: AppConfig,
+    model: object,
+    feature_window: pd.DataFrame,
+) -> np.ndarray | None:
+    """Return the latest causal trunk embedding row for live/replay policy obs."""
+    if config.rl.observation_mode != "embedding":
+        return None
+    from epoch_ai.models.tcn_model import TCNModel
+
+    if not isinstance(model, TCNModel) or model.multi_head_spec_ is None:
+        return None
+    cols = list(model.feature_names_ or feature_window.columns)
+    frame = feature_window[cols]
+    if frame.empty:
+        return None
+    emb = model.embed(frame)
+    return np.asarray(emb[-1], dtype=np.float32)

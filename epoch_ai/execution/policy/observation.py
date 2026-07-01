@@ -60,6 +60,19 @@ def policy_env_observation(
     return build_observation(env.current_forecast(), env.portfolio, config)
 
 
+def build_runtime_observation(
+    config: AppConfig,
+    multi: MultiHorizonPredictionResult | None,
+    portfolio: PortfolioState,
+    *,
+    trunk_embedding: np.ndarray | None = None,
+) -> np.ndarray:
+    """Build the policy observation for live/replay (forecast or embedding mode)."""
+    if config.rl.observation_mode == "embedding" and trunk_embedding is not None:
+        return build_embedding_observation(trunk_embedding, portfolio, config)
+    return build_observation(multi, portfolio, config)
+
+
 def build_observation(
     multi: MultiHorizonPredictionResult | None,
     portfolio: PortfolioState,

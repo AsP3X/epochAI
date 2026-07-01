@@ -115,3 +115,53 @@ def test_trunk_policy_trains_on_embedding_env(market, small_config, tmp_path):
 
     policy.train(env)
     assert env.embeddings is not None
+
+
+def test_runtime_trunk_embedding_returns_latest_row(market, small_config):
+    pytest.importorskip("torch")
+    from epoch_ai.execution.policy.trunk_policy import runtime_trunk_embedding
+    from epoch_ai.features.pipeline import (
+        FeaturePipeline,
+        build_multi_horizon_targets,
+        build_target,
+    )
+    from epoch_ai.models.tcn_model import TCNModel
+
+    cfg = small_config
+    cfg.model.backend = "tcn"
+    cfg.model.calibration = "none"
+    cfg.model.val_fraction = 0.2
+    cfg.model.refit_full_after_es = False
+    cfg.model.tcn.lookback = 16
+    cfg.model.tcn.channels = [16, 16]
+    cfg.model.tcn.kernel_size = 3
+    cfg.model.tcn.max_epochs = 6
+    cfg.model.tcn.patience = 2
+    cfg.model.tcn.batch_size = 128
+    cfg.prediction.horizons = [4, 8]
+    cfg.prediction.horizon = 8
+    cfg.rl.observation_mode = "embedding"
+
+    features = FeaturePipeline(cfg).transform(market)
+    y = build_target(market, cfg.prediction)
+    multi = build_multi_horizon_targets(market, cfg.prediction)
+    keep = ["target"]
+    for h in cfg.prediction.horizons:
+        keep.extend([f"ret_{h}", f"target_{h}"])
+    data = features.join(y).join(multi).dropna(subset=keep)
+    multi_cols = [c for c in data.columns if c.startswith(("ret_", "target_"))]
+    x, target, mt = data[features.columns], data["target"], data[multi_cols]
+
+    model = TCNModel(cfg.model, task="classification")
+    model.fit(
+        x.iloc[:2400],
+        target.iloc[:2400],
+        prediction=cfg.prediction,
+        multi_targets=mt.iloc[:2400],
+    )
+    window = x.iloc[:200]
+    row = runtime_trunk_embedding(cfg, model, window)
+    assert row is not None
+    assert row.shape == (model.trunk_dim,)
+    cfg.rl.observation_mode = "forecast"
+    assert runtime_trunk_embedding(cfg, model, window) is None

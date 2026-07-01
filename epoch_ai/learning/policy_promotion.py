@@ -487,6 +487,28 @@ def auto_train_and_promote_policy(
     if promote:
         champion_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(challenger_path, champion_path)
+        if (
+            work_model is not None
+            and champion_model is not None
+            and work_model is not champion_model
+        ):
+            try:
+                registry = ModelRegistry(config.model.model_dir)
+                label = registry.save(
+                    work_model,
+                    metadata={"source": "joint_trunk_policy_promotion"},
+                    retain_versions=config.model.retain_versions,
+                )
+                registry.set_promoted(
+                    label,
+                    info={"reason": "joint trunk policy promotion"},
+                )
+                logger.info(
+                    "Registered and promoted joint fine-tuned TCN %s with policy.",
+                    label,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not register joint TCN champion: %s", exc)
 
     logger.info(
         "Policy auto-train: challenger=%s %s=%.6f baseline=%.6f buy_hold=%.6f -> %s [%s]",

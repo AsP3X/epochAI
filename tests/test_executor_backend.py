@@ -7,6 +7,7 @@ path has no reliability/threshold dead-band forcing flat.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from epoch_ai.execution.policy.executor import decide_trading_action
@@ -123,3 +124,30 @@ def test_learned_path_has_no_reliability_deadband():
 
     assert decision.signal == 1
     assert decision.target_weight > 0
+
+
+def test_runtime_observation_uses_embedding_when_provided():
+    config = _policy_config(
+        rl={"observation_mode": "embedding"},
+        trading={"policy_backend": "learned"},
+    )
+    portfolio = PortfolioState.initial(10_000.0)
+    emb = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    captured: list[np.ndarray] = []
+
+    class _CapturePolicy:
+        def act(self, obs, *, deterministic=False):
+            captured.append(obs.copy())
+            return 1.0
+
+    decide_trading_action(
+        config,
+        raw_prediction=0.5,
+        multi=_multi(config, p_up=0.5),
+        portfolio=portfolio,
+        ppo=_CapturePolicy(),
+        trunk_embedding=emb,
+    )
+    assert len(captured) == 1
+    assert np.allclose(captured[0][:3], emb)
+    assert captured[0].shape[0] == 3 + 4

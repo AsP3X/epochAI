@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
@@ -183,6 +184,19 @@ class RuntimeService:
             timeframe=self.config.timeframe,
             horizons=forecasts,
         )
+
+    def trunk_embedding_for_market(self, market: pd.DataFrame) -> np.ndarray | None:
+        """Latest causal TCN trunk embedding for policy obs (embedding mode only)."""
+        if market.empty:
+            return None
+        features = self.pipeline.transform(market, log_stats=False)
+        if features.empty:
+            return None
+        model = self._require_model()
+        frame = self._model_input_frame(model, features)
+        from epoch_ai.execution.policy.trunk_policy import runtime_trunk_embedding
+
+        return runtime_trunk_embedding(self.config, model, frame)
 
     def run_session(
         self,
