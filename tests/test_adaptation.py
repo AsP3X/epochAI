@@ -89,6 +89,69 @@ def test_decide_policy_promotion_requires_benchmark_beats():
     assert "improves" in reason
 
 
+def test_promotion_requires_absolute_floor():
+    # Bootstrap (no champion) below the absolute floor must NOT promote a losing policy.
+    promote, reason = decide_policy_promotion(
+        challenger_value=-0.2,
+        champion_value=None,
+        baseline_value=0.0,
+        buy_hold_value=0.0,
+        metric="risk_adjusted_return",
+        min_improvement=0.0,
+        require_beat_baseline=False,
+        require_beat_buy_hold=False,
+        min_absolute_metric=0.0,
+    )
+    assert promote is False
+    assert "floor" in reason.lower() or "absolute" in reason.lower()
+
+    # Bootstrap above the floor promotes.
+    promote, _ = decide_policy_promotion(
+        challenger_value=0.15,
+        champion_value=None,
+        baseline_value=0.0,
+        buy_hold_value=0.0,
+        metric="risk_adjusted_return",
+        min_improvement=0.0,
+        require_beat_baseline=False,
+        require_beat_buy_hold=False,
+        min_absolute_metric=0.0,
+    )
+    assert promote is True
+
+    # The floor also applies when a champion exists and is otherwise beaten.
+    promote, _ = decide_policy_promotion(
+        challenger_value=-0.05,
+        champion_value=-0.10,
+        baseline_value=0.0,
+        buy_hold_value=0.0,
+        metric="risk_adjusted_return",
+        min_improvement=0.0,
+        require_beat_baseline=False,
+        require_beat_buy_hold=False,
+        min_absolute_metric=0.0,
+    )
+    assert promote is False
+
+
+def test_baseline_beat_is_report_only_by_default():
+    # A challenger that beats the champion and clears the floor is promoted even when it
+    # does NOT beat baseline/buy-hold, given the new report-only (False) defaults.
+    promote, reason = decide_policy_promotion(
+        challenger_value=0.30,
+        champion_value=0.20,
+        baseline_value=0.90,  # baseline is better, but no longer a gate
+        buy_hold_value=0.80,  # buy-hold is better, but no longer a gate
+        metric="risk_adjusted_return",
+        min_improvement=0.0,
+        require_beat_baseline=False,
+        require_beat_buy_hold=False,
+        min_absolute_metric=0.0,
+    )
+    assert promote is True
+    assert "improves" in reason
+
+
 @pytest.mark.slow
 def test_retrain_with_action_log_smoke(small_config, tmp_path):
     from epoch_ai.learning.retrain_job import run_retrain

@@ -127,31 +127,52 @@ def metric_value(metrics: ReplayMetrics, metric: str) -> float:
 def replay_metrics(
     env: TradingReplayEnv, weight_fn: Callable[[TradingReplayEnv], float]
 ) -> ReplayMetrics:
-    """Simulate ``weight_fn`` over the env's return series."""
+    """Simulate ``weight_fn`` over the env's return series.
+
+    Metrics are computed on an HONEST per-bar equity curve rebuilt from each step's
+    ``info["equity_path"]`` (one entry per bar consumed). This matters under
+    ``reward_mode="multi_bar"``: a single ``env.step`` can span up to ``reward_horizon``
+    bars, so sampling equity only at step boundaries would miss intra-block drawdowns
+    (optimistic ``max_drawdown``) and compute Sharpe on block returns rather than per-bar
+    returns. The curve starts at ``start_eq`` and is extended with every held bar.
+    """
     env.reset()
     start_eq = env.portfolio.equity
-    step_rets: list[float] = []
-    peak = start_eq
-    max_dd = 0.0
+    # Human: per-bar equity curve seeded with the starting equity; each step contributes
+    #        one point per bar it consumed (per_bar => 1 point, multi_bar => up to N).
+    # Agent: curve length == total bars consumed + 1; drives Sharpe + max_dd below.
+    curve: list[float] = [start_eq]
 
     while not env.done:
-        prev = env.portfolio.equity
         weight = apply_guardrails(
             weight_fn(env),
             env.portfolio,
             env.config.trading,
             env.config.risk,
         )
-        _, _, done, _ = env.step(weight)
-        eq = env.portfolio.equity
-        step_rets.append((eq - prev) / max(1e-9, prev))
-        peak = max(peak, eq)
-        max_dd = max(max_dd, (peak - eq) / max(1e-9, peak))
+        _, _, done, info = env.step(weight)
+        # Agent: defensive default keeps this working for any future step variant that
+        #        omits equity_path (both current modes always provide it).
+        curve.extend(float(eq) for eq in info.get("equity_path", [info["equity"]]))
         if done:
             break
 
-    arr = np.asarray(step_rets, dtype=float)
-    sharpe = float(arr.mean() / (arr.std() + 1e-9)) if len(arr) else 0.0
+    curve_arr = np.asarray(curve, dtype=float)
+    # Per-bar returns from the honest equity curve (floor denominator to stay finite if
+    # equity ever hits ~0, mirroring the original per-step guard).
+    per_bar_rets = (
+        np.diff(curve_arr) / np.maximum(1e-9, curve_arr[:-1])
+        if len(curve_arr) > 1
+        else np.array([])
+    )
+    sharpe = (
+        float(per_bar_rets.mean() / (per_bar_rets.std() + 1e-9))
+        if len(per_bar_rets)
+        else 0.0
+    )
+    # Running max drawdown over the per-bar curve (catches intra-block dips).
+    peak = np.maximum.accumulate(curve_arr)
+    max_dd = float(((peak - curve_arr) / peak).max()) if len(curve_arr) else 0.0
     total_return = float((env.portfolio.equity - start_eq) / max(1e-9, start_eq))
     risk_adj = total_return / max(max_dd, 1e-6)
     return ReplayMetrics(
@@ -173,8 +194,18 @@ def decide_policy_promotion(
     min_improvement: float,
     require_beat_baseline: bool,
     require_beat_buy_hold: bool,
+    min_absolute_metric: float = 0.0,
 ) -> tuple[bool, str]:
-    """Gate promotion on champion improvement and benchmark beats."""
+    """Gate promotion on champion improvement, an absolute floor, and optional benchmarks.
+
+    Args:
+        min_absolute_metric: Absolute floor on ``metric``. Even an otherwise-promotable
+            challenger (including the bootstrap case with no champion) is refused when its
+            value is below this floor, so a money-losing policy is never promoted.
+        require_beat_baseline / require_beat_buy_hold: Now default report-only (see
+            :class:`PolicyPromotionConfig`); still enforced as hard gates when a caller
+            passes ``True``.
+    """
     if challenger_value is None or math.isnan(challenger_value):
         return False, "challenger metric is undefined (NaN); keeping champion"
 
@@ -194,6 +225,16 @@ def decide_policy_promotion(
     else:
         promote = True
         reason = f"challenger improves {metric} over champion"
+
+    # Human: absolute floor is the primary guard now that benchmark beats are report-only.
+    #        It applies to BOTH the champion-improvement path and the bootstrap path so we
+    #        never promote a challenger whose metric is below the floor (e.g. losing money).
+    # Agent: enforced after the champion/bootstrap decision, before optional benchmark gates.
+    if promote and challenger_value < min_absolute_metric:
+        return False, (
+            f"challenger {metric}={challenger_value:.6f} below absolute floor "
+            f"{min_absolute_metric:.6f}"
+        )
 
     if promote and require_beat_baseline and challenger_value <= baseline_value:
         return False, (
@@ -319,6 +360,7 @@ def auto_train_and_promote_policy(
         min_improvement=promo.min_improvement,
         require_beat_baseline=promo.require_beat_baseline,
         require_beat_buy_hold=promo.require_beat_buy_hold,
+        min_absolute_metric=promo.min_absolute_metric,
     )
 
     if promote:

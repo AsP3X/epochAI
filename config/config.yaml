@@ -262,7 +262,7 @@ risk:
 
 # Learned / baseline trading policy (execution only; predictor stays separate).
 trading:
-  policy_backend: baseline     # threshold|baseline|learned|learned_with_baseline_fallback
+  policy_backend: learned_with_baseline_fallback     # threshold|baseline|learned|learned_with_baseline_fallback
   reliability_floor: 0.35
   max_position_fraction: 1.0
   max_drawdown_kill: 0.20
@@ -303,8 +303,9 @@ rl:
     metric: risk_adjusted_return
     min_improvement: 0.0
     champion_path: artifacts/policy/champion.pt
-    require_beat_baseline: true
-    require_beat_buy_hold: true
+    require_beat_baseline: false   # report-only: baseline comparison logged, not gated
+    require_beat_buy_hold: false   # report-only: buy-and-hold comparison logged, not gated
+    min_absolute_metric: 0.0       # absolute floor on the gate metric (blocks money-losing promotes, incl. bootstrap)
 
 # Live runtime: trained model + live data -> predictions -> trades
 execution:

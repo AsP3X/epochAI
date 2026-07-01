@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 
 from epoch_ai.config.settings import AppConfig
 from epoch_ai.execution.policy.env import TradingReplayEnv
+from epoch_ai.execution.policy.guardrails import apply_guardrails
+from epoch_ai.learning.policy_promotion import replay_metrics
 from tests.test_policy_env import _policy_config
 
 
@@ -96,3 +100,77 @@ def test_per_bar_mode_advances_one_bar():
     start_pos = env._pos
     env.step(cap)
     assert env._pos - start_pos == 1
+
+
+def _dip_market() -> pd.DataFrame:
+    # Human: close RISES to 120 then DIPS to 108 (all inside one reward_horizon block)
+    #        then recovers to 112, ending the block ABOVE the intra-block trough. A step
+    #        that samples equity only at the block boundary misses the 120 -> 108 drop.
+    # Agent: deterministic; intra-block peak-to-trough = (120-108)/120 = 0.10.
+    close = pd.Series([100.0, 105.0, 110.0, 120.0, 108.0, 112.0, 113.0, 114.0])
+    return pd.DataFrame({"close": close})
+
+
+def _max_dd(curve: list[float]) -> float:
+    arr = np.asarray(curve, dtype=float)
+    peak = np.maximum.accumulate(arr)
+    return float(((peak - arr) / peak).max())
+
+
+def test_equity_path_reports_every_held_bar():
+    # per_bar step exposes a 1-element equity_path; multi_bar exposes one entry per bar.
+    per_bar = _zero_cost_config(reward_mode="per_bar")
+    env = TradingReplayEnv.from_market(per_bar, _rising_market())
+    env.reset()
+    cap = per_bar.trading.max_position_fraction * per_bar.risk.max_leverage
+    _, _, _, info = env.step(cap)
+    assert info["equity_path"] == [info["equity"]]
+
+    multi = _zero_cost_config(reward_horizon=6)
+    env = TradingReplayEnv.from_market(multi, _dip_market())
+    env.reset()
+    _, _, _, info = env.step(cap)
+    assert len(info["equity_path"]) == info["bars_held"]
+    # Last per-bar equity equals the block-boundary equity.
+    assert np.isclose(info["equity_path"][-1], info["equity"])
+
+
+def test_replay_metrics_per_bar_drawdown_captures_intrablock_dip():
+    config = _zero_cost_config(reward_horizon=6)
+    market = _dip_market()
+    cap = config.trading.max_position_fraction * config.risk.max_leverage
+
+    def weight_fn(_env: TradingReplayEnv) -> float:
+        return cap
+
+    metrics = replay_metrics(TradingReplayEnv.from_market(config, market), weight_fn)
+
+    # Reconstruct the per-bar curve (what replay_metrics builds) and the coarse
+    # boundary-only curve (what the old block-boundary sampling would have seen).
+    env = TradingReplayEnv.from_market(config, market)
+    env.reset()
+    start_eq = env.portfolio.equity
+    per_bar_curve = [start_eq]
+    boundary_curve = [start_eq]
+    total_bars = 0
+    while not env.done:
+        w = apply_guardrails(
+            weight_fn(env), env.portfolio, env.config.trading, env.config.risk
+        )
+        _, _, done, info = env.step(w)
+        per_bar_curve.extend(info["equity_path"])
+        boundary_curve.append(info["equity"])
+        total_bars += info["bars_held"]
+        if done:
+            break
+
+    boundary_dd = _max_dd(boundary_curve)
+    per_bar_dd = _max_dd(per_bar_curve)
+
+    # The honest per-bar drawdown must expose the intra-block dip the boundary misses.
+    assert boundary_dd == 0.0
+    assert per_bar_dd > boundary_dd
+    assert np.isclose(metrics.max_drawdown, per_bar_dd, atol=1e-9)
+    assert math.isfinite(metrics.sharpe)
+    # Curve spans every consumed bar plus the starting equity.
+    assert len(per_bar_curve) == total_bars + 1

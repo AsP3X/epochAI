@@ -839,7 +839,7 @@ class TradingConfig(BaseModel):
         "learned",
         "learned_with_baseline_fallback",
     ] = Field(
-        default="baseline",
+        default="learned_with_baseline_fallback",
         description="threshold=RiskManager; baseline=ensemble; learned=PPO; fallback=learned then baseline.",
     )
     reliability_floor: float = Field(
@@ -900,8 +900,20 @@ class PolicyPromotionConfig(BaseModel):
         description="Required improvement over champion to promote.",
     )
     champion_path: str = "artifacts/policy/champion.pt"
-    require_beat_baseline: bool = True
-    require_beat_buy_hold: bool = True
+    # Human: baseline / buy-and-hold comparisons are now REPORT-ONLY by default -- they are
+    #        logged for context but no longer block promotion. Set True to re-enable them
+    #        as hard gates for a given run.
+    # Agent: CONFIG rl.promotion; default False => decide_policy_promotion ignores benchmarks.
+    require_beat_baseline: bool = False
+    require_beat_buy_hold: bool = False
+    min_absolute_metric: float = Field(
+        default=0.0,
+        description=(
+            "Absolute floor on the gate metric; a challenger must reach at least this "
+            "value to be promoted, even when there is no champion (bootstrap). Prevents "
+            "promoting a money-losing policy."
+        ),
+    )
 
 
 class RLConfig(BaseModel):

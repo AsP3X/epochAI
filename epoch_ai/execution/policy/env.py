@@ -234,7 +234,19 @@ class TradingReplayEnv:
         self._prev_equity = self.portfolio.equity
         self._pos += 1
         done = self._pos >= len(self.returns) - 1
-        return self._obs(), float(reward), done, {"equity": self.portfolio.equity, "weight": weight}
+        # Human: equity_path lets replay_metrics build an honest per-bar equity curve. In
+        #        per_bar mode exactly one bar is consumed, so it is a 1-element list.
+        # Agent: RETURNS equity AFTER the single bar consumed this step.
+        return (
+            self._obs(),
+            float(reward),
+            done,
+            {
+                "equity": self.portfolio.equity,
+                "weight": weight,
+                "equity_path": [self.portfolio.equity],
+            },
+        )
 
     def _step_multi_bar(self, target_weight: float) -> tuple[np.ndarray, float, bool, dict]:
         """Hold one decision for up to ``reward_horizon`` bars; reward is the block return.
@@ -265,7 +277,12 @@ class TradingReplayEnv:
         # Human: hold the weight constant and roll equity forward one bar at a time up to
         #        reward_horizon bars, stopping early if the return series is exhausted.
         # Agent: CAUSAL; consumes returns[_pos] then advances _pos; never reads beyond it.
+        # Human: record equity AFTER each held bar so replay_metrics can reconstruct an
+        #        honest per-bar equity curve and see intra-block drawdowns (a step spans
+        #        up to reward_horizon bars, so sampling only at the boundary hides dips).
+        # Agent: equity_path appended inside the hold loop; one entry per consumed bar.
         n_bars_held = 0
+        equity_path: list[float] = []
         for _ in range(rl.reward_horizon):
             bar_ret = float(self.returns[self._pos])
             pnl = weight * bar_ret * self.portfolio.equity
@@ -277,6 +294,7 @@ class TradingReplayEnv:
             self._pos += 1
             self.portfolio.bars_elapsed += 1
             n_bars_held += 1
+            equity_path.append(self.portfolio.equity)
             if self._pos >= len(self.returns) - 1:
                 break
 
@@ -303,5 +321,6 @@ class TradingReplayEnv:
                 "equity": self.portfolio.equity,
                 "weight": weight,
                 "bars_held": n_bars_held,
+                "equity_path": equity_path,
             },
         )

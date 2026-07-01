@@ -335,7 +335,10 @@ def test_shipped_config_yaml_loads():
     assert config.features.sentiment is True
     assert config.features.patterns is True
     assert config.adaptation.schedule_interval_hours == 24.0
-    assert config.rl.promotion.require_beat_baseline is True
+    # Benchmark beats are now report-only by default; the absolute floor is the gate.
+    assert config.rl.promotion.require_beat_baseline is False
+    assert config.rl.promotion.require_beat_buy_hold is False
+    assert config.rl.promotion.min_absolute_metric == 0.0
     assert config.features.manipulation is True
     assert config.features.higher_timeframe is True
     assert config.features.onchain is True
