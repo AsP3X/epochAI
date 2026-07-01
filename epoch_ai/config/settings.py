@@ -909,7 +909,10 @@ class RLConfig(BaseModel):
 
     enabled: bool = False
     policy_path: str = "artifacts/policy/ppo_policy.pt"
-    hidden_sizes: list[int] = Field(default_factory=lambda: [64, 32])
+    # Human: default policy net capacity. [256, 128] is a serious-but-CPU-safe budget
+    #        for the small observation vector; GPU presets can go wider (see config.yaml).
+    # Agent: CONFIG drives PPOPolicy.body Linear stack; no hard-coded net widths elsewhere.
+    hidden_sizes: list[int] = Field(default_factory=lambda: [256, 128])
     learning_rate: float = 3e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95

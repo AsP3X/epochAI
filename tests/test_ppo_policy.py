@@ -42,6 +42,26 @@ def test_ppo_train_save_load_act(tmp_path):
     assert abs(a1 - a2) < 1e-5
 
 
+def test_ppo_net_respects_hidden_sizes():
+    # Human: the PPO body must be config-driven -- one Linear layer per configured
+    #        hidden size -- so we can scale capacity from YAML without code changes.
+    # Agent: CONFIG rl.hidden_sizes drives nn.Linear count in policy.body; act clamps to [-1,1].
+    import torch.nn as nn
+
+    from epoch_ai.config.settings import RLConfig
+
+    policy = PPOPolicy(
+        obs_dim=10,
+        config=RLConfig(hidden_sizes=[256, 256, 128], device="cpu"),
+    )
+    linear_count = sum(1 for m in policy.body if isinstance(m, nn.Linear))
+    assert linear_count == 3
+
+    action = policy.act(np.zeros(10, dtype=np.float32), deterministic=True)
+    assert isinstance(action, float)
+    assert -1.0 <= action <= 1.0
+
+
 def test_ppo_act_is_deterministic():
     config = _policy_config(
         rl={"total_updates": 1, "rollout_steps": 8, "device": "cpu"}

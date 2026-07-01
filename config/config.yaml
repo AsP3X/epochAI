@@ -269,14 +269,21 @@ trading:
   max_hold_bars: 288           # ~1 day at 5m
   funding_rate_per_bar: 0.0
   trade_frequency: selective    # selective|active
-  decision_horizons: []         # empty => all prediction.horizons
+  # Multi-timescale policy input: a FAST head (1 bar) + slower MULTI-bar heads,
+  # all drawn from prediction.horizons ([1, 3, 6, 12, 24, 48]). Leaving this empty
+  # falls back to ALL prediction.horizons (also multi-timescale, just wider).
+  decision_horizons: [1, 6, 12]  # fast (5m) + 30m + 1h heads at a 5m base
+
   action_log_path: artifacts/logs/action_log.jsonl
   session_state_path: artifacts/session_state.json
 
 rl:
   enabled: false
   policy_path: artifacts/policy/ppo_policy.pt
-  hidden_sizes: [64, 32]
+  # Policy net capacity (one Linear layer per width). Larger default for a more
+  # serious model; safe on CPU for tests. GPU preset can go wider, e.g.
+  # [512, 512, 256]; weak GPUs / CPU-only should downshift to [128, 64].
+  hidden_sizes: [256, 128]
   learning_rate: 0.0003
   gamma: 0.99
   gae_lambda: 0.95
